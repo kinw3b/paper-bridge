@@ -23,6 +23,15 @@ Fixed development ID: `ecicfkapebfbpdgfaiadgfcghkpgmbem`. The native host only t
 
 The web2html skill opens this panel during a run. You record the live page; the skill waits for **Done**, then continues the pipeline. Do not start a capture session outside that flow — destinations, file IDs, and receipts all come from the skill.
 
+## Versioning
+
+Release tags match `manifest.json` `version` (for example `1.2.19`). Tag the commit that ships that version; do not reuse a tag.
+
+```bash
+git tag -a 1.2.19 -m "Paper Capture Tool 1.2.19"
+git push origin 1.2.19
+```
+
 ## Uninstall
 
 Double-click `uninstall-native-host.command`, then remove the unpacked extension from `chrome://extensions`.

@@ -4,7 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { applySemanticsToPaper } from "./semantics.mjs";
 
-const HOST_VERSION = "1.2.14";
+const HOST_VERSION = "1.2.19";
 const BOARD_NAMES = ["Navigation", "Hover States", "Components"];
 const MAX_MESSAGE_BYTES = 8 * 1024 * 1024;
 const MAX_HTML_BYTES = 220_000;

@@ -61,6 +61,67 @@ function setConnection(online, text = online ? "Connected" : "Offline") {
   ui.connection.innerHTML = `<i></i> ${text}`;
 }
 
+function applySession(session, { overwrite = false } = {}) {
+  if (!session || typeof session !== "object") return;
+  for (const key of ["paperFileId", "projectRoot", "paperEndpoint"]) {
+    const value = String(session[key] || "").trim();
+    if (!value) continue;
+    if (!overwrite && ui[key].value.trim()) continue;
+    ui[key].value = value;
+  }
+}
+
+function parseHref(href) {
+  try {
+    const url = new URL(href);
+    const hash = new URLSearchParams(url.hash.startsWith("#") ? url.hash.slice(1) : url.hash);
+    const paperFileId = (url.searchParams.get("paperFileId") || hash.get("paperFileId") || "").trim();
+    const projectRoot = (url.searchParams.get("projectRoot") || hash.get("projectRoot") || "").trim();
+    const paperEndpoint = (url.searchParams.get("paperEndpoint") || hash.get("paperEndpoint") || "").trim();
+    if (!paperFileId && !projectRoot) return null;
+    return { paperFileId, projectRoot, paperEndpoint };
+  } catch {
+    return null;
+  }
+}
+
+async function sessionFromOpenTab() {
+  const tabs = await chrome.tabs.query({});
+  for (const tab of tabs) {
+    const session = parseHref(tab.url || "");
+    if (session) return session;
+  }
+  return null;
+}
+
+async function hydrateFromOpenTab() {
+  const session = await sessionFromOpenTab();
+  if (!session) return;
+  applySession(session, { overwrite: true });
+  await chrome.storage.local.set({
+    paperFileId: session.paperFileId,
+    projectRoot: session.projectRoot,
+    captureAutostart: true,
+    ...(session.paperEndpoint ? { paperEndpoint: session.paperEndpoint } : {}),
+  });
+}
+
+let autoStarted = false;
+
+async function maybeAutoStart() {
+  if (autoStarted || ui.setup.hidden) return;
+  const fromTab = await sessionFromOpenTab();
+  const stored = await chrome.storage.local.get(["paperFileId", "projectRoot", "captureAutostart"]);
+  if (!fromTab && !stored.captureAutostart) return;
+  if (fromTab) applySession(fromTab, { overwrite: true });
+  const paperFileId = ui.paperFileId.value.trim();
+  const projectRoot = ui.projectRoot.value.trim();
+  if (!paperFileId || !projectRoot.startsWith("/")) return;
+  autoStarted = true;
+  await chrome.storage.local.remove("captureAutostart");
+  await startCapture();
+}
+
 function connectHost() {
   if (port) return Promise.resolve();
   return new Promise((resolve, reject) => {
@@ -131,12 +192,36 @@ function nativeRequest(type, payload = {}) {
 }
 
 async function currentTab() {
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  if (!tab?.id) throw new Error("No active source tab found");
-  if (!/^(https?|file):/i.test(tab.url || "")) {
-    throw new Error("Open the source URL in this tab before starting capture");
+  const queries = [
+    { active: true, lastFocusedWindow: true },
+    { active: true, currentWindow: true },
+  ];
+  for (const query of queries) {
+    const [tab] = await chrome.tabs.query(query);
+    if (tab?.id && /^(https?|file):/i.test(tab.url || "")) return tab;
   }
-  return tab;
+  const tabs = await chrome.tabs.query({});
+  const tab = tabs.find((item) => /^(https?|file):/i.test(item.url || "") && parseHref(item.url || ""));
+  if (tab?.id) return tab;
+  throw new Error("Open the source URL in this tab before starting capture");
+}
+
+function cleanSourceUrl(href) {
+  try {
+    const url = new URL(href);
+    for (const key of ["paperFileId", "projectRoot", "paperEndpoint", "paper-capture"]) {
+      url.searchParams.delete(key);
+    }
+    const hash = new URLSearchParams(url.hash.startsWith("#") ? url.hash.slice(1) : "");
+    for (const key of ["paperFileId", "projectRoot", "paperEndpoint", "paper-capture"]) {
+      hash.delete(key);
+    }
+    const nextHash = hash.toString();
+    url.hash = nextHash;
+    return url.href;
+  } catch {
+    return href;
+  }
 }
 
 function stage() { return STAGES[stageIndex]; }
@@ -310,7 +395,7 @@ async function startCapture() {
     activeTab = await currentTab();
     await connectHost();
     await nativeRequest("START_SESSION", {
-      config: { paperFileId, projectRoot, paperEndpoint, sourceUrl: activeTab.url },
+      config: { paperFileId, projectRoot, paperEndpoint, sourceUrl: cleanSourceUrl(activeTab.url) },
     });
     const injected = await chrome.runtime.sendMessage({ type: "HC_INJECT", tabId: activeTab.id });
     if (!injected?.ok) throw new Error(injected?.error || "Could not load Capture Tool on the source tab");
@@ -602,10 +687,28 @@ for (const button of ui.navKindPicker.querySelectorAll(".kind")) {
   });
 }
 
-chrome.storage.local.get(["paperFileId", "projectRoot", "paperEndpoint"]).then((saved) => {
-  ui.paperFileId.value = saved.paperFileId || "";
-  ui.projectRoot.value = saved.projectRoot || "";
-  ui.paperEndpoint.value = saved.paperEndpoint || "http://127.0.0.1:29979/mcp";
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area !== "local") return;
+  applySession({
+    paperFileId: changes.paperFileId?.newValue,
+    projectRoot: changes.projectRoot?.newValue,
+    paperEndpoint: changes.paperEndpoint?.newValue,
+  }, { overwrite: true });
+  maybeAutoStart();
+});
+
+chrome.tabs.onUpdated.addListener(() => {
+  hydrateFromOpenTab().then(maybeAutoStart);
+});
+chrome.tabs.onActivated.addListener(() => {
+  hydrateFromOpenTab().then(maybeAutoStart);
+});
+
+chrome.storage.local.get(["paperFileId", "projectRoot", "paperEndpoint"]).then(async (saved) => {
+  applySession(saved);
+  ui.paperEndpoint.value = saved.paperEndpoint || ui.paperEndpoint.value || "http://127.0.0.1:29979/mcp";
+  await hydrateFromOpenTab();
+  await maybeAutoStart();
 });
 
 connectHost().catch((error) => {

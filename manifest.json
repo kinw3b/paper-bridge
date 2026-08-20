@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Paper Capture Tool",
-  "version": "1.2.14",
+  "version": "1.2.19",
   "description": "Capture navbar, dropdown, hover, component, object, and tag states from a live page into Paper.",
   "minimum_chrome_version": "116",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA1CHFeIXxiwbw2xGtw3fbwlqGjYNZ3HdQ2igGQV7A7KDkNL3cgKhJ1x0TColJpooAokRvppUlg7CJ/gcOgTtfGeBkgdfI409ftg3YYbQmAJLNuWPrmFE2iYylEf0HIeRqtiSoanYpan9ZKvYMjtbLC+6jWnSRnoDkxe2Sez+dBLeVbtgtfyugPw1MEJ1kxEKgju+7nFltwt8zuJKNCyX3ce34dcpY3MFLXU7J6jJe3m4rp1Y2VVEglaiM95VcVz3gYBkYvtHqtMAK4GIeuNoR1mqNNAxLgCak9M4FTyy0CHFaKjgyTYwtSOlf/jus4N4vVsZigyOpgAltaKMAn8tLgwIDAQAB",
@@ -24,5 +24,12 @@
   },
   "side_panel": {
     "default_path": "sidepanel/panel.html"
-  }
+  },
+  "content_scripts": [
+    {
+      "matches": ["http://*/*", "https://*/*"],
+      "js": ["content/session-from-url.js"],
+      "run_at": "document_start"
+    }
+  ]
 }

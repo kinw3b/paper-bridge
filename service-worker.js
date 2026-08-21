@@ -264,8 +264,36 @@ async function captureNavBreakpoints(url, fingerprint) {
   return { ok: errors.length === 0, captures, errors };
 }
 
+// The side panel steals page width, so a scan at the window's own size never matches the
+// 1600px artboard. Force the artboard width for the scan, then hand the viewport back.
+async function scanTagsAtWidth(tabId, width) {
+  let attached = false;
+  try {
+    await attach(tabId);
+    attached = true;
+    const before = await pageSize(tabId);
+    await lockViewport(tabId, { width, height: Math.max(900, Number(before.height) || 900) });
+    await inject(tabId);
+    const result = await tabSend(tabId, { type: "HC_AUTO_TAGS" });
+    if (!result?.ok || !result.capture) throw new Error(result?.error || "Tag scan failed");
+    return result;
+  } finally {
+    if (attached) {
+      await cdp(tabId, "Emulation.clearDeviceMetricsOverride", {}).catch(() => {});
+      await detach(tabId);
+    }
+  }
+}
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!message || typeof message.type !== "string") return false;
+
+  if (message.type === "HC_SCAN_TAGS") {
+    scanTagsAtWidth(message.tabId, Number(message.width) || 1600).then(sendResponse, (error) => {
+      sendResponse({ ok: false, error: error.message });
+    });
+    return true;
+  }
 
   if (message.type === "HC_SESSION_FROM_PAGE") {
     // Page-supplied — validate before it reaches storage. A rejected session is

@@ -623,7 +623,9 @@ async function runAuto() {
       return;
     }
     if (stage().id === "tags") {
-      const result = await pageMessage({ type: "HC_AUTO_TAGS" });
+      const tab = await resolveSourceTab();
+      await ensureInjected(tab.id);
+      const result = await chrome.runtime.sendMessage({ type: "HC_SCAN_TAGS", tabId: tab.id, width: 1600 });
       if (!result?.ok) throw new Error(result?.error || "Tag scan failed");
       pending += 1;
       renderStage();

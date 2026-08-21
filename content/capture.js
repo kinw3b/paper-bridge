@@ -14,6 +14,7 @@
     semanticOverlays: new Map(),
     sectionRoots: null,
     sectionRootsAt: 0,
+    pairStep: 0,
   };
 
   const root = document.createElement("x-paper-capture-root");
@@ -536,18 +537,33 @@
     box.style.top = `${Math.round(rect.top)}px`;
     box.style.width = `${Math.round(rect.width)}px`;
     box.style.height = `${Math.round(rect.height)}px`;
-    chip.textContent = state.mode === "tags"
-      ? `<${target.tagName.toLowerCase()}> · ${textOf(target)}`
-      : `${state.captureKind} · ${target.tagName.toLowerCase()} · ${textOf(target)}`;
+    if (state.mode === "tags") {
+      chip.textContent = `<${target.tagName.toLowerCase()}>`;
+      chip.removeAttribute("data-pair-step");
+      return;
+    }
+    const type = elementType(target, state.captureKind);
+    if (state.pairStep) {
+      chip.textContent = "";
+      const badge = document.createElement("b");
+      badge.textContent = String(state.pairStep).padStart(2, "0");
+      chip.append(badge, document.createTextNode(type));
+      chip.setAttribute("data-pair-step", String(state.pairStep));
+      return;
+    }
+    chip.textContent = type;
+    chip.removeAttribute("data-pair-step");
   }
 
-  function setRecording(recording, mode = state.mode, captureKind = state.captureKind) {
+  function setRecording(recording, mode = state.mode, captureKind = state.captureKind, pairStep = 0) {
     state.recording = Boolean(recording);
     state.mode = mode;
     state.captureKind = captureKind;
+    state.pairStep = Number(pairStep) || 0;
     state.parentDepth = 0;
     status.style.display = state.recording ? "flex" : "none";
-    statusText.textContent = `Record · ${captureKind}`;
+    statusText.textContent = state.pairStep ? `State ${state.pairStep} of 2` : `Record · ${captureKind}`;
+    status.toggleAttribute("data-pair", Boolean(state.pairStep));
     document.documentElement.toggleAttribute("data-paper-capture-recording", state.recording);
     if (!state.recording) box.style.display = "none";
     if (state.mode === "tags") showSemanticOverlays();
@@ -663,7 +679,7 @@
       return false;
     }
     if (message.type === "HC_SET_RECORDING") {
-      setRecording(message.recording, message.mode, message.captureKind);
+      setRecording(message.recording, message.mode, message.captureKind, message.pairStep);
       sendResponse({ ok: true });
       return false;
     }

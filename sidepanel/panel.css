@@ -25,6 +25,8 @@
   --auto-soft: rgba(255, 157, 46, .14);
   --auto-line: rgba(255, 157, 46, .55);
   --auto-glow: rgba(255, 157, 46, .38);
+  --pair-two: #7dd3fc;
+  --pair-two-line: rgba(125, 211, 252, .55);
   --human: #ffd166;
   --danger: #ff6b5e;
   --record: #ff3b30;
@@ -351,6 +353,8 @@ code { padding: 1px 4px; border-radius: var(--radius); background: var(--bg); co
 .record-state strong { display: block; margin-bottom: 4px; color: var(--ink); font: 700 10px/1 var(--mono); text-transform: uppercase; letter-spacing: .08em; }
 .record-state p { margin: 0; color: var(--muted); font-size: 10px; line-height: 1.4; }
 .record-lamp { width: 8px; height: 8px; flex: 0 0 auto; background: var(--line-strong); }
+.record-card[data-pair-step="2"] { border-color: var(--pair-two-line); }
+.record-card[data-pair-step="2"] .record-lamp { background: var(--pair-two); }
 .record-card.recording { border-color: var(--record-line); }
 .record-card.recording .record-lamp { background: var(--record); box-shadow: 0 0 0 4px var(--record-soft); animation: blink 800ms ease-in-out infinite alternate; }
 @keyframes blink { to { opacity: .3; } }
@@ -391,11 +395,11 @@ code { padding: 1px 4px; border-radius: var(--radius); background: var(--bg); co
 .takes { display: grid; gap: 6px; max-height: 250px; overflow: auto; margin: 12px 20px 0; }
 .take {
   display: grid;
-  grid-template-columns: 20px 1fr auto;
+  grid-template-columns: 20px minmax(0, auto) auto minmax(0, 1fr);
   align-items: center;
-  gap: 10px;
-  min-height: 42px;
-  padding: 8px 10px;
+  gap: 8px;
+  min-height: 34px;
+  padding: 7px 10px;
   border: 1px solid var(--line);
   border-radius: var(--radius);
   background: var(--bg);
@@ -403,10 +407,22 @@ code { padding: 1px 4px; border-radius: var(--radius); background: var(--bg); co
 .take-icon { display: grid; place-items: center; width: 20px; height: 20px; border: 1px solid var(--line-strong); color: var(--muted); font: 800 10px/1 var(--mono); }
 .take.success .take-icon { border-color: var(--accent-line); background: var(--accent-soft); color: var(--accent); }
 .take.failed .take-icon { border-color: var(--danger); color: var(--danger); }
-.take strong { display: block; max-width: 190px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink); font-size: 10px; font-weight: 600; }
-.take p { margin: 3px 0 0; color: var(--muted); font: 600 9px/1 var(--mono); letter-spacing: .04em; }
+.take strong { min-width: 0; max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink); font: 700 10px/1 var(--mono); letter-spacing: .04em; }
+.take em:empty { padding: 0; border: 0; }
+.take em {
+  padding: 3px 5px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  color: var(--text);
+  font: 700 9px/1 var(--mono);
+  font-style: normal;
+  letter-spacing: .06em;
+  white-space: nowrap;
+}
+.take p { min-width: 0; margin: 0; overflow: hidden; text-overflow: ellipsis; text-align: right; white-space: nowrap; color: var(--muted); font: 600 9px/1 var(--mono); letter-spacing: .04em; }
 .take.success p { color: var(--accent); }
 .take.failed p { color: var(--danger); }
+.take.failed { grid-template-columns: 20px minmax(0, auto) auto minmax(0, 1fr) auto; }
 .retry { border: 0; background: transparent; color: var(--accent); font: 700 9px/1 var(--mono); text-transform: uppercase; letter-spacing: .09em; }
 .retry:hover { color: var(--ink); }
 

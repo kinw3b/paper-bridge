@@ -51,6 +51,15 @@ let sourceUrl = "";
 let stageIndex = 0;
 let navKind = "navbar";
 let pairDraft = null;
+
+// Stages that record a component twice; the badge counts 01 → 02 as you go.
+function isPairStage(item = stage()) {
+  return (item.id === "nav" && navKind === "dropdown") || item.id === "multi";
+}
+
+function pairStep() {
+  return isPairStage() ? (pairDraft ? 2 : 1) : 0;
+}
 let recording = false;
 let pending = 0;
 const requests = new Map();
@@ -268,11 +277,14 @@ function renderTakes() {
     const row = document.createElement("div");
     row.className = `take ${take.status}`;
     const icon = take.status === "success" ? "✓" : take.status === "failed" ? "!" : "…";
-    row.innerHTML = `<span class="take-icon">${icon}</span><div><strong></strong><p></p></div>`;
-    row.querySelector("strong").textContent = take.label;
+    row.innerHTML = `<span class="take-icon">${icon}</span><strong></strong><em></em><p></p>`;
+    row.querySelector("strong").textContent = take.sectionId
+      ? `${take.sectionId} · ${take.label}`
+      : take.label;
+    row.querySelector("em").textContent = take.states > 1 ? `${take.states} states` : "";
     row.querySelector("p").textContent = take.status === "success"
-      ? `✓ added to Paper · ${take.board}`
-      : take.status === "failed" ? take.error : "Sending to Paper…";
+      ? "Added to Paper"
+      : take.status === "failed" ? take.error : "Sending…";
     if (take.status === "failed") {
       const retry = document.createElement("button");
       retry.className = "retry";
@@ -305,13 +317,17 @@ function renderStage() {
   ui.recordButton.disabled = pending > 0;
   ui.recordTitle.textContent = item.id === "tags"
     ? ui.autoMode.checked ? "Auto semantic scan ready" : "Semantic scan ready"
-    : pairDraft ? "State 1 is ready"
+    : isPairStage(item) ? `State ${pairStep()} of 2`
       : ui.autoMode.checked ? "Auto mode ready" : "Ready to record";
   ui.recordHelp.textContent = item.id === "tags"
     ? "Scan semantic elements across the full page."
-    : pairDraft ? "Open or change it, then capture state 2."
-      : ui.autoMode.checked ? "Scan the page and choose safe matches." : "Choose an element. Use ↑/↓ to select its parent.";
-  const recordLabel = item.id === "tags" ? "Scan" : ui.autoMode.checked ? "Auto" : "Record";
+    : pairDraft ? "Change the component on the page, then record state 2."
+      : isPairStage(item) ? "Record the component as it sits now."
+        : ui.autoMode.checked ? "Scan the page and choose safe matches." : "Choose an element. Use ↑/↓ to select its parent.";
+  const recordLabel = item.id === "tags"
+    ? "Scan"
+    : isPairStage(item) ? `Record state ${pairStep()}`
+      : ui.autoMode.checked ? "Auto" : "Record";
   ui.recordButton.innerHTML = `<span></span>${recordLabel}`;
   renderNavbarProgress();
   renderTakes();
@@ -321,6 +337,7 @@ function renderStage() {
     recording: false,
     mode: item.id,
     captureKind: currentKind(),
+    pairStep: pairStep(),
   }).catch(() => {});
   if (item.id === "tags") {
     pageMessage({ type: "HC_SHOW_TAG_OUTLINES" }).catch(() => {});
@@ -388,11 +405,16 @@ function setActivity(text, sending = false) {
 
 function setRecording(value) {
   recording = value;
-  document.querySelector(".record-card").classList.toggle("recording", recording);
-  ui.recordTitle.textContent = recording ? "Recording is on" : pairDraft ? "State 1 is ready" : "Ready to record";
-  ui.recordHelp.textContent = recording ? "Click the outlined element." : pairDraft
-    ? "Open or change it, then capture state 2." : "Choose an element. Use ↑/↓ to select its parent.";
-  ui.recordButton.textContent = recording ? "Cancel" : ui.autoMode.checked ? "Auto" : "Record";
+  const card = document.querySelector(".record-card");
+  card.classList.toggle("recording", recording);
+  card.dataset.pairStep = isPairStage() ? String(pairStep()) : "";
+  if (recording) {
+    ui.recordTitle.textContent = isPairStage() ? `Recording state ${pairStep()}` : "Recording is on";
+    ui.recordHelp.textContent = "Click the outlined element.";
+    ui.recordButton.textContent = "Cancel";
+    return;
+  }
+  renderStage();
 }
 
 async function startCapture() {
@@ -432,6 +454,8 @@ async function commitTake(payload) {
     label: payload.label || currentKind(),
     stage: stage().id,
     kind: payload.kind || currentKind(),
+    sectionId: payload.sectionId,
+    states: payload.hoverHtml && payload.defaultHtml ? 2 : 1,
     breakpoint: payload.breakpoint,
     status: "sending",
   };
@@ -488,7 +512,7 @@ async function handleCapture(capture) {
   if ((item.id === "nav" && navKind === "dropdown") || item.id === "multi") {
     if (!pairDraft) {
       pairDraft = capture;
-      setActivity("State 1 captured locally. Change/open it on the page, then record state 2.");
+      setActivity("State 1 held locally. Change it on the page, then record state 2.");
       renderStage();
       return;
     }
@@ -500,6 +524,7 @@ async function handleCapture(capture) {
       mode: item.id,
       kind: item.id === "nav" ? "dropdown" : "multi-state",
       label: first.label,
+      sectionId: first.sectionId,
       defaultHtml: first.html,
       hoverHtml: capture.html,
       html: undefined,
@@ -566,13 +591,13 @@ async function toggleRecord() {
     if (recording) {
       setRecording(false);
       await pageMessage({
-        type: "HC_SET_RECORDING", recording: false, mode: stage().id, captureKind: currentKind(),
+        type: "HC_SET_RECORDING", recording: false, mode: stage().id, captureKind: currentKind(), pairStep: pairStep(),
       });
       return;
     }
     setRecording(true);
     await pageMessage({
-      type: "HC_SET_RECORDING", recording: true, mode: stage().id, captureKind: currentKind(),
+      type: "HC_SET_RECORDING", recording: true, mode: stage().id, captureKind: currentKind(), pairStep: pairStep(),
     });
   } catch (error) {
     setRecording(false);

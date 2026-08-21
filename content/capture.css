@@ -52,6 +52,28 @@ x-paper-capture-chip {
   white-space: nowrap !important;
   overflow: hidden !important;
   text-overflow: ellipsis !important;
+  gap: 8px !important;
+}
+
+/* The pair badge counts the take you are on, so state 1 and state 2 never blur together. */
+x-paper-capture-chip b {
+  display: inline-flex !important;
+  align-items: center !important;
+  height: 16px !important;
+  padding: 0 5px !important;
+  border-radius: 2px !important;
+  background: #0b0d0a !important;
+  color: #c7ff52 !important;
+  font-size: 10px !important;
+  font-weight: 700 !important;
+  letter-spacing: .06em !important;
+}
+
+x-paper-capture-chip[data-pair-step="2"] { background: #7dd3fc !important; }
+x-paper-capture-chip[data-pair-step="2"] b { color: #7dd3fc !important; }
+x-paper-capture-box:has(x-paper-capture-chip[data-pair-step="2"]) {
+  border-color: #7dd3fc !important;
+  background: color-mix(in srgb, #7dd3fc 10%, transparent) !important;
 }
 
 x-paper-semantic-outline {

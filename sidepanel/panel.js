@@ -261,8 +261,9 @@ function renderStages() {
     button.className = `stage-dot${index === stageIndex ? " active" : ""}${index < stageIndex ? " complete" : ""}`;
     button.textContent = index < stageIndex ? "✓" : item.short;
     button.title = item.title;
-    button.disabled = index > stageIndex;
-    if (index < stageIndex) button.addEventListener("click", () => changeStage(index));
+    // Any stage is reachable: jumping straight to Tags is a normal way to test one step.
+    button.disabled = index === stageIndex || pending > 0;
+    if (index !== stageIndex) button.addEventListener("click", () => changeStage(index));
     ui.stageRail.append(button);
   });
 }

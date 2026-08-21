@@ -1,3 +1,11 @@
+@font-face {
+  font-family: "Geist Mono";
+  src: url("/assets/fonts/GeistMono-Variable.ttf") format("truetype-variations");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
 x-paper-capture-root,
 x-paper-capture-root * {
   box-sizing: border-box !important;
@@ -35,7 +43,7 @@ x-paper-capture-chip {
   border-radius: 2px !important;
   background: #c7ff52 !important;
   color: #0b0d0a !important;
-  font-family: ui-monospace, "SFMono-Regular", "SF Mono", Menlo, Consolas, monospace !important;
+  font-family: "Geist Mono", ui-monospace, "SFMono-Regular", "SF Mono", Menlo, Consolas, monospace !important;
   font-size: 10px !important;
   font-weight: 700 !important;
   text-transform: uppercase !important;
@@ -72,7 +80,7 @@ x-paper-semantic-chip {
   border-radius: 2px 2px 0 0 !important;
   background: #30372a !important;
   color: #f4f7ed !important;
-  font-family: ui-monospace, "SFMono-Regular", "SF Mono", Menlo, Consolas, monospace !important;
+  font-family: "Geist Mono", ui-monospace, "SFMono-Regular", "SF Mono", Menlo, Consolas, monospace !important;
   font-size: 9px !important;
   font-weight: 700 !important;
   line-height: 17px !important;
@@ -96,7 +104,7 @@ x-paper-capture-status {
   background: rgba(11, 13, 10, .94) !important;
   box-shadow: 0 16px 44px rgba(11, 13, 10, .45) !important;
   color: #f4f7ed !important;
-  font-family: ui-monospace, "SFMono-Regular", "SF Mono", Menlo, Consolas, monospace !important;
+  font-family: "Geist Mono", ui-monospace, "SFMono-Regular", "SF Mono", Menlo, Consolas, monospace !important;
   font-size: 11px !important;
   font-weight: 700 !important;
   text-transform: uppercase !important;

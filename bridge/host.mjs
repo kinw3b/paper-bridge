@@ -425,6 +425,9 @@ async function applySemanticTake(take) {
   persistTakeArtifacts(take);
   const doc = writeSemantics(take);
   const result = await applySemanticsToPaper({ call: paperCall, doc, artboard: "home-desktop" });
+  try {
+    writeJson(path.join(config.projectRoot, "qa", "paper-semantics-debug.json"), result.debug);
+  } catch { /* diagnostics are best effort */ }
   const session = sessionState();
   const receipt = {
     takeId: take.id,

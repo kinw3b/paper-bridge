@@ -114,6 +114,7 @@ export async function applySemanticsToPaper({ call, doc, artboard = "home-deskto
   const used = new Set();
   const scanned = (doc.sections || []).reduce((count, section) => count + (section.nodes || []).length, 0);
   const missingSections = [];
+  const debug = { artboard, boardId: board.id, paperSections: children.map((node) => node.name), sections: [] };
   for (const section of doc.sections || []) {
     const frame = sections.find((node) => String(node.name || "").startsWith(`${section.id} ·`));
     if (!frame) {
@@ -122,6 +123,17 @@ export async function applySemanticsToPaper({ call, doc, artboard = "home-deskto
     }
     const tree = await walkPaperTree(call, frame.id);
     await hydratePaperTexts(call, tree);
+    const before = updates.length;
+    debug.sections.push({
+      id: section.id,
+      frame: frame.name,
+      treeSize: tree.length,
+      census: (section.nodes || []).slice(0, 40).map((node) => ({ tag: node.tag, text: node.text, alt: node.alt })),
+      paperNodes: tree.slice(0, 200).map((node) => ({
+        name: node.name, component: node.component, childCount: node.childCount,
+        depth: node.depth, textContent: node.textContent,
+      })),
+    });
     for (const semantic of section.nodes || []) {
       let hit = matchPaperNode(tree.filter((node) => !used.has(node.id)), semantic);
       if (!hit) continue;
@@ -131,6 +143,7 @@ export async function applySemanticsToPaper({ call, doc, artboard = "home-deskto
       const name = semantic.paperName || semanticName(semantic);
       if (hit.name !== name) updates.push({ nodeId: hit.id, name });
     }
+    debug.sections[debug.sections.length - 1].renamed = updates.length - before;
   }
   if (updates.length) {
     await call("rename_nodes", { updates });
@@ -144,5 +157,6 @@ export async function applySemanticsToPaper({ call, doc, artboard = "home-deskto
     matched: used.size,
     renamed: updates.length,
     updates,
+    debug,
   };
 }

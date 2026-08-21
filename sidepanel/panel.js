@@ -308,11 +308,12 @@ function renderStage() {
   ui.doneButton.hidden = item.id !== "tags";
   const navbarConfirmed = navbarReceiptCount();
   const navbarComplete = hasAllNavbarReceipts();
-  ui.continueButton.disabled = pending > 0 || (item.id === "nav" && !navbarComplete);
+  // Breakpoint receipts are reported, not enforced: Paper can lag and the user still owns the call.
+  ui.continueButton.disabled = pending > 0;
   ui.continueButton.classList.toggle("is-waiting", item.id === "nav" && !navbarComplete && pending > 0);
   ui.continueButton.textContent = item.id !== "nav" || navbarComplete
     ? "Continue"
-    : pending > 0 ? `Confirming · ${navbarConfirmed}/3` : `Waiting for Paper · ${navbarConfirmed}/3`;
+    : pending > 0 ? `Confirming · ${navbarConfirmed}/3` : `Continue · ${navbarConfirmed}/3`;
   ui.doneButton.disabled = pending > 0;
   ui.recordButton.disabled = pending > 0;
   ui.recordTitle.textContent = item.id === "tags"

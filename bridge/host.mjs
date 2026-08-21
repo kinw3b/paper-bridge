@@ -435,6 +435,7 @@ async function applySemanticTake(take) {
     missingSections: result.missingSections,
     matched: result.matched,
     renamed: result.renamed,
+    updates: result.updates,
     addedAt: new Date().toISOString(),
   };
   session.receipts[take.id] = receipt;

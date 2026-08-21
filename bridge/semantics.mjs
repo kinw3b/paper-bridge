@@ -46,17 +46,19 @@ function matchPaperNode(nodes, census) {
   return scored[0]?.score >= 1 ? scored[0].node : null;
 }
 
-// Framer exports nest deeply; 10 levels stopped short of the text layers we need to rename.
-async function walkPaperTree(call, rootId, depth = 0) {
-  if (!rootId || depth > 16) return [];
+// Paper does not always report childCount, so recurse on every node and let an empty
+// get_children end the branch; gating on childCount stopped the walk at depth 1.
+async function walkPaperTree(call, rootId, depth = 0, budget = { left: 4000 }) {
+  if (!rootId || depth > 16 || budget.left <= 0) return [];
   const list = childrenOf(payload(await call("get_children", { nodeId: rootId })));
   const out = [];
   for (const node of list) {
+    if (budget.left <= 0) break;
+    budget.left -= 1;
     node.parentId = rootId;
+    node.depth = depth;
     out.push(node);
-    if (Number(node.childCount || node.children?.length || 0) > 0) {
-      out.push(...await walkPaperTree(call, node.id, depth + 1));
-    }
+    out.push(...await walkPaperTree(call, node.id, depth + 1, budget));
   }
   return out;
 }

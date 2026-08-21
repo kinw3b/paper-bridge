@@ -23,27 +23,29 @@ function semanticName(node) {
   return `${tag} · ${label}`;
 }
 
-function matchPaperNode(nodes, census) {
+function isTextLayer(node) {
+  return /text|richtext/i.test(node.component || "") || Boolean(node.textContent);
+}
+
+function isImageLayer(node) {
+  return /image|img|svg|picture/i.test(`${node.component || ""} ${node.name || ""}`);
+}
+
+// Score one census entry against every Paper node. Exact text wins; a text tag never
+// takes an image or shape layer, which is how <p> ended up renaming a Rectangle.
+function scorePaperNode(node, census) {
   const want = norm(census.text || census.alt);
   const tag = String(census.tag || "").toLowerCase();
-  const scored = [];
-  for (const node of nodes) {
-    if (/^\d{2}\s*·/.test(node.name || "")) continue;
-    if (new RegExp(`^${tag}\\s*·`, "i").test(node.name || "")
-      && (!want || norm(node.name).includes(want.slice(0, 24)))) return node;
-    const text = norm(node.textContent || node.name || "");
-    const image = /image|img/i.test(node.component || "") || /image|img/i.test(node.name || "");
-    if (tag === "img") {
-      if (!image && !/photo|shot|media/i.test(node.name || "")) continue;
-      if (!want) scored.push({ node, score: Number(node.childCount || 0) === 0 ? 2 : 1 });
-      continue;
-    }
-    if (!text || !want) continue;
-    if (text === want) scored.push({ node, score: Number(node.childCount || 0) === 0 ? 4 : 3 });
-    else if (text.includes(want) || want.includes(text)) scored.push({ node, score: 1 });
-  }
-  scored.sort((a, b) => b.score - a.score);
-  return scored[0]?.score >= 1 ? scored[0].node : null;
+  if (/^\d{2}\s*·/.test(node.name || "")) return 0;
+  if (tag === "img") return isImageLayer(node) ? (Number(node.childCount || 0) === 0 ? 2 : 1) : 0;
+  if (!want) return 0;
+  if (!isTextLayer(node)) return 0;
+  const text = norm(node.textContent);
+  if (!text) return 0;
+  if (text === want) return 6;
+  if (text.startsWith(want) || want.startsWith(text)) return 4;
+  if (text.includes(want) || want.includes(text)) return 2;
+  return 0;
 }
 
 // Paper does not always report childCount, so recurse on every node and let an empty
@@ -110,41 +112,48 @@ export async function applySemanticsToPaper({ call, doc, artboard = "home-deskto
   if (!board?.id) throw new Error(`No ${artboard} artboard exists in Paper`);
   const children = childrenOf(payload(await call("get_children", { nodeId: board.id })));
   const sections = children.filter((node) => /^\d{2}\s*·/.test(node.name || ""));
-  const updates = [];
-  const used = new Set();
   const scanned = (doc.sections || []).reduce((count, section) => count + (section.nodes || []).length, 0);
-  const missingSections = [];
-  const debug = { artboard, boardId: board.id, paperSections: children.map((node) => node.name), sections: [] };
-  for (const section of doc.sections || []) {
-    const frame = sections.find((node) => String(node.name || "").startsWith(`${section.id} ·`));
-    if (!frame) {
-      missingSections.push(section.id);
-      continue;
-    }
-    const tree = await walkPaperTree(call, frame.id);
-    await hydratePaperTexts(call, tree);
-    const before = updates.length;
-    debug.sections.push({
-      id: section.id,
-      frame: frame.name,
-      treeSize: tree.length,
-      census: (section.nodes || []).slice(0, 40).map((node) => ({ tag: node.tag, text: node.text, alt: node.alt })),
-      paperNodes: tree.slice(0, 200).map((node) => ({
-        name: node.name, component: node.component, childCount: node.childCount,
-        depth: node.depth, textContent: node.textContent,
-      })),
-    });
-    for (const semantic of section.nodes || []) {
-      let hit = matchPaperNode(tree.filter((node) => !used.has(node.id)), semantic);
-      if (!hit) continue;
-      hit = interactiveContainer(hit, tree, String(semantic.tag || "").toLowerCase());
+
+  // Live-DOM band numbers never line up with the pipeline's Paper sections, so search the
+  // whole artboard by content instead of trusting the section id as an index.
+  const tree = [];
+  for (const frame of sections) {
+    const nodes = await walkPaperTree(call, frame.id);
+    for (const node of nodes) node.sectionName = frame.name;
+    tree.push(...nodes);
+  }
+  await hydratePaperTexts(call, tree);
+
+  const census = (doc.sections || []).flatMap((section) =>
+    (section.nodes || []).map((node) => ({ ...node, sourceSection: section.id })));
+
+  // Two passes so a loose partial match cannot consume a layer some exact match needs.
+  const used = new Set();
+  const updates = [];
+  const unmatched = [];
+  for (const floor of [4, 1]) {
+    for (const semantic of census) {
+      if (semantic.claimed) continue;
+      let best = null;
+      let bestScore = 0;
+      for (const node of tree) {
+        if (used.has(node.id)) continue;
+        const score = scorePaperNode(node, semantic);
+        if (score > bestScore) { bestScore = score; best = node; }
+      }
+      if (!best || bestScore < floor) continue;
+      const hit = interactiveContainer(best, tree, String(semantic.tag || "").toLowerCase());
       if (used.has(hit.id)) continue;
       used.add(hit.id);
+      semantic.claimed = true;
       const name = semantic.paperName || semanticName(semantic);
       if (hit.name !== name) updates.push({ nodeId: hit.id, name });
     }
-    debug.sections[debug.sections.length - 1].renamed = updates.length - before;
   }
+  for (const semantic of census) {
+    if (!semantic.claimed) unmatched.push({ tag: semantic.tag, text: String(semantic.text || "").slice(0, 60) });
+  }
+
   if (updates.length) {
     await call("rename_nodes", { updates });
     try { await call("finish_working_on_nodes", {}); } catch { /* optional Paper cleanup */ }
@@ -153,10 +162,19 @@ export async function applySemanticsToPaper({ call, doc, artboard = "home-deskto
     artboard,
     scanned,
     sourceSections: (doc.sections || []).length,
-    missingSections,
+    missingSections: [],
     matched: used.size,
     renamed: updates.length,
     updates,
-    debug,
+    debug: {
+      artboard,
+      paperSections: sections.map((node) => node.name),
+      treeSize: tree.length,
+      unmatched: unmatched.slice(0, 60),
+      paperNodes: tree.slice(0, 300).map((node) => ({
+        name: node.name, component: node.component, section: node.sectionName,
+        depth: node.depth, textContent: node.textContent,
+      })),
+    },
   };
 }

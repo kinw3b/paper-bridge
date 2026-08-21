@@ -392,7 +392,7 @@ code { padding: 1px 4px; border-radius: var(--radius); background: var(--bg); co
 }
 
 .takes:empty { display: none; }
-.takes { display: grid; gap: 6px; max-height: 250px; overflow: auto; margin: 12px 20px 0; }
+.takes { display: grid; gap: 6px; max-height: 320px; overflow: auto; margin: 12px 20px 0; }
 .take {
   display: grid;
   grid-template-columns: 20px minmax(0, auto) auto minmax(0, 1fr);
@@ -407,6 +407,7 @@ code { padding: 1px 4px; border-radius: var(--radius); background: var(--bg); co
 .take-icon { display: grid; place-items: center; width: 20px; height: 20px; border: 1px solid var(--line-strong); color: var(--muted); font: 800 10px/1 var(--mono); }
 .take.success .take-icon { border-color: var(--accent-line); background: var(--accent-soft); color: var(--accent); }
 .take.failed .take-icon { border-color: var(--danger); color: var(--danger); }
+.take.idle { opacity: .62; }
 .take strong { min-width: 0; max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink); font: 700 10px/1 var(--mono); letter-spacing: .04em; }
 .take em:empty { padding: 0; border: 0; }
 .take em {

@@ -276,16 +276,16 @@ function renderTakes() {
   for (const take of visible) {
     const row = document.createElement("div");
     row.className = `take ${take.status}`;
-    const icon = take.status === "success" ? "✓" : take.status === "failed" ? "!" : "…";
+    const icon = take.status === "success" ? "✓" : take.status === "failed" ? "!" : take.status === "idle" ? "–" : "…";
     row.innerHTML = `<span class="take-icon">${icon}</span><strong></strong><em></em><p></p>`;
     row.querySelector("strong").textContent = take.sectionId
       ? `${take.sectionId} · ${take.label}`
       : take.label;
-    row.querySelector("em").textContent = take.states > 1 ? `${take.states} states` : "";
-    row.querySelector("p").textContent = take.status === "success"
+    row.querySelector("em").textContent = take.meta || (take.states > 1 ? `${take.states} states` : "");
+    row.querySelector("p").textContent = take.note || (take.status === "success"
       ? "Added to Paper"
-      : take.status === "failed" ? take.error : "Sending…";
-    if (take.status === "failed") {
+      : take.status === "failed" ? take.error : "Sending…");
+    if (take.status === "failed" && retryPayloads.has(take.id)) {
       const retry = document.createElement("button");
       retry.className = "retry";
       retry.textContent = "Retry";
@@ -627,15 +627,11 @@ async function runAuto() {
       renderStage();
       try {
         const applied = await nativeRequest("APPLY_SEMANTICS", { take: result.capture });
-        takes.push({
-          id: result.capture.id,
-          label: `Semantics · ${applied.receipt.renamed} layers tagged`,
-          stage: "tags",
-          kind: "tags-scan",
-          status: "success",
-          board: "home-desktop",
-          semanticReceipt: applied.receipt,
-        });
+        // A rescan replaces the previous census rather than stacking a second one.
+        for (let index = takes.length - 1; index >= 0; index -= 1) {
+          if (takes[index].stage === "tags") takes.splice(index, 1);
+        }
+        takes.push(...tagReport(result.capture, applied.receipt));
         const missing = applied.receipt.missingSections?.length
           ? ` · missing Paper sections ${applied.receipt.missingSections.join(", ")}` : "";
         setActivity(`✓ ${applied.receipt.scanned} candidates across ${applied.receipt.sourceSections} sections · ${applied.receipt.matched} matched · ${applied.receipt.renamed} renamed${missing}`);
@@ -659,6 +655,60 @@ async function runAuto() {
   } finally {
     ui.recordButton.disabled = false;
   }
+}
+
+// One row per tag so the census reads as a report, not a single truncated label.
+function tagReport(capture, receipt) {
+  const found = new Map();
+  for (const node of capture.semanticNodes || []) {
+    const tag = String(node.tag || "").toLowerCase();
+    if (!tag) continue;
+    found.set(tag, (found.get(tag) || 0) + 1);
+  }
+  const tagged = new Map();
+  for (const update of receipt.updates || []) {
+    const tag = String(update.name || "").split("·")[0].trim().toLowerCase();
+    if (!found.has(tag)) continue;
+    tagged.set(tag, (tagged.get(tag) || 0) + 1);
+  }
+  const total = [...found.values()].reduce((sum, count) => sum + count, 0);
+  const rows = [{
+    id: capture.id,
+    label: "Semantic census",
+    stage: "tags",
+    kind: "tags-scan",
+    status: "success",
+    board: "home-desktop",
+    meta: `${total} tags`,
+    note: `${receipt.renamed} tagged in Paper`,
+    semanticReceipt: receipt,
+  }];
+  // Paper sections we scanned for but never found are the usual reason a tag never lands.
+  if (receipt.missingSections?.length) {
+    rows.push({
+      id: `${capture.id}-missing`,
+      label: "No Paper section",
+      stage: "tags",
+      kind: "tag-tally",
+      status: "failed",
+      meta: `${receipt.missingSections.length} skipped`,
+      note: receipt.missingSections.join(", "),
+    });
+  }
+  const ranked = [...found.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+  for (const [tag, count] of ranked) {
+    const hits = tagged.get(tag) || 0;
+    rows.push({
+      id: `${capture.id}-${tag}`,
+      label: `<${tag}>`,
+      stage: "tags",
+      kind: "tag-tally",
+      status: hits ? "success" : "idle",
+      meta: `${count} found`,
+      note: hits ? `${hits} tagged` : "no Paper match",
+    });
+  }
+  return rows;
 }
 
 function changeStage(index) {

@@ -50,11 +50,17 @@ function textScore(node, census) {
 
 // Paper mirrors the page layout, so page coordinates disambiguate what text cannot:
 // duplicate copy (nav vs hero "Get Started Now") and images, which carry no text at all.
-function geometryScore(node, census, scale) {
+function medianOffset(anchors) {
+  if (anchors.length < 8) return null;
+  const mid = (values) => values.sort((a, b) => a - b)[Math.floor(values.length / 2)];
+  return { dx: mid(anchors.map((a) => a.dx)), dy: mid(anchors.map((a) => a.dy)) };
+}
+
+function geometryScore(node, census, scale, offset = { dx: 0, dy: 0 }) {
   if (!scale) return 0;
   if (!Number.isFinite(node.pageX) || !Number.isFinite(census.x)) return 0;
-  const dx = Math.abs(node.pageX - census.x * scale);
-  const dy = Math.abs(node.pageY - census.y * scale);
+  const dx = Math.abs(node.pageX - (census.x * scale + offset.dx));
+  const dy = Math.abs(node.pageY - (census.y * scale + offset.dy));
   const distance = dx + dy;
   if (distance > 120) return 0;
   if (distance <= 4) return 6;
@@ -168,6 +174,7 @@ export async function applySemanticsToPaper({ call, doc, artboard = "home-deskto
   const used = new Set();
   const updates = [];
   const unmatched = [];
+  const anchors = [];
   for (const floor of [14, 8, 3]) {
     for (const semantic of census) {
       if (semantic.claimed) continue;
@@ -181,12 +188,39 @@ export async function applySemanticsToPaper({ call, doc, artboard = "home-deskto
       if (!best || bestScore < floor) continue;
       const hit = interactiveContainer(best, tree, String(semantic.tag || "").toLowerCase());
       if (used.has(hit.id)) continue;
+      if (textScore(best, semantic) >= 6 && Number.isFinite(best.pageX) && Number.isFinite(semantic.x)) {
+        anchors.push({ dx: best.pageX - semantic.x * scale, dy: best.pageY - semantic.y * scale });
+      }
       used.add(hit.id);
       semantic.claimed = true;
       const name = semantic.paperName || semanticName(semantic);
       if (hit.name !== name) updates.push({ nodeId: hit.id, name });
     }
   }
+  // Paper's rebuild carries its own artboard padding, so absolute page coordinates never
+  // line up. Derive the offset from the exact-text matches, then place the rest by position.
+  const offset = medianOffset(anchors);
+  if (offset && scale) {
+    for (const semantic of census) {
+      if (semantic.claimed) continue;
+      let best = null;
+      let bestScore = 0;
+      for (const node of tree) {
+        if (used.has(node.id)) continue;
+        if (!typeFits(node, String(semantic.tag || "").toLowerCase())) continue;
+        const score = geometryScore(node, semantic, scale, offset);
+        if (score > bestScore) { bestScore = score; best = node; }
+      }
+      if (!best || bestScore < 4) continue;
+      const hit = interactiveContainer(best, tree, String(semantic.tag || "").toLowerCase());
+      if (used.has(hit.id)) continue;
+      used.add(hit.id);
+      semantic.claimed = true;
+      const name = semantic.paperName || semanticName(semantic);
+      if (hit.name !== name) updates.push({ nodeId: hit.id, name });
+    }
+  }
+
   for (const semantic of census) {
     if (!semantic.claimed) unmatched.push({ tag: semantic.tag, text: String(semantic.text || "").slice(0, 60) });
   }
@@ -211,6 +245,8 @@ export async function applySemanticsToPaper({ call, doc, artboard = "home-deskto
       boardWidth,
       docWidth,
       geometryUsed: scale > 0,
+      anchors: anchors.length,
+      offset,
       unmatched: unmatched.slice(0, 80),
       paperNodes: tree.slice(0, 300).map((node) => ({
         name: node.name, component: node.component, section: node.sectionName,

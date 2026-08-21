@@ -50,10 +50,29 @@ function textScore(node, census) {
 
 // Paper mirrors the page layout, so page coordinates disambiguate what text cannot:
 // duplicate copy (nav vs hero "Get Started Now") and images, which carry no text at all.
-function medianOffset(anchors) {
-  if (anchors.length < 8) return null;
-  const mid = (values) => values.sort((a, b) => a - b)[Math.floor(values.length / 2)];
-  return { dx: mid(anchors.map((a) => a.dx)), dy: mid(anchors.map((a) => a.dy)) };
+function median(values) {
+  if (!values.length) return 0;
+  const sorted = [...values].sort((a, b) => a - b);
+  return sorted[Math.floor(sorted.length / 2)];
+}
+
+// Paper's rebuild drifts further from the live page the lower you go, so one global
+// offset is useless. Calibrate each section from its own confident matches.
+function offsetsBySection(anchors) {
+  if (anchors.length < 6) return null;
+  const groups = new Map();
+  for (const anchor of anchors) {
+    if (!groups.has(anchor.section)) groups.set(anchor.section, []);
+    groups.get(anchor.section).push(anchor);
+  }
+  const table = new Map();
+  for (const [section, list] of groups) {
+    if (list.length < 3) continue;
+    table.set(section, { dx: median(list.map((a) => a.dx)), dy: median(list.map((a) => a.dy)) });
+  }
+  if (!table.size) return null;
+  table.set("*", { dx: median(anchors.map((a) => a.dx)), dy: median(anchors.map((a) => a.dy)) });
+  return table;
 }
 
 function geometryScore(node, census, scale, offset = { dx: 0, dy: 0 }) {
@@ -62,11 +81,10 @@ function geometryScore(node, census, scale, offset = { dx: 0, dy: 0 }) {
   const dx = Math.abs(node.pageX - (census.x * scale + offset.dx));
   const dy = Math.abs(node.pageY - (census.y * scale + offset.dy));
   const distance = dx + dy;
-  if (distance > 120) return 0;
-  if (distance <= 4) return 6;
-  if (distance <= 16) return 4;
-  if (distance <= 48) return 2;
-  return 1;
+  if (distance > 64) return 0;
+  if (distance <= 6) return 6;
+  if (distance <= 20) return 4;
+  return 2;
 }
 
 function scorePaperNode(node, census, scale) {
@@ -189,7 +207,11 @@ export async function applySemanticsToPaper({ call, doc, artboard = "home-deskto
       const hit = interactiveContainer(best, tree, String(semantic.tag || "").toLowerCase());
       if (used.has(hit.id)) continue;
       if (textScore(best, semantic) >= 6 && Number.isFinite(best.pageX) && Number.isFinite(semantic.x)) {
-        anchors.push({ dx: best.pageX - semantic.x * scale, dy: best.pageY - semantic.y * scale });
+        anchors.push({
+          section: best.sectionName,
+          dx: best.pageX - semantic.x * scale,
+          dy: best.pageY - semantic.y * scale,
+        });
       }
       used.add(hit.id);
       semantic.claimed = true;
@@ -199,8 +221,8 @@ export async function applySemanticsToPaper({ call, doc, artboard = "home-deskto
   }
   // Paper's rebuild carries its own artboard padding, so absolute page coordinates never
   // line up. Derive the offset from the exact-text matches, then place the rest by position.
-  const offset = medianOffset(anchors);
-  if (offset && scale) {
+  const offsets = offsetsBySection(anchors);
+  if (offsets && scale) {
     for (const semantic of census) {
       if (semantic.claimed) continue;
       let best = null;
@@ -208,6 +230,7 @@ export async function applySemanticsToPaper({ call, doc, artboard = "home-deskto
       for (const node of tree) {
         if (used.has(node.id)) continue;
         if (!typeFits(node, String(semantic.tag || "").toLowerCase())) continue;
+        const offset = offsets.get(node.sectionName) || offsets.get("*");
         const score = geometryScore(node, semantic, scale, offset);
         if (score > bestScore) { bestScore = score; best = node; }
       }
@@ -246,7 +269,7 @@ export async function applySemanticsToPaper({ call, doc, artboard = "home-deskto
       docWidth,
       geometryUsed: scale > 0,
       anchors: anchors.length,
-      offset,
+      offsets: offsets ? Object.fromEntries(offsets) : null,
       unmatched: unmatched.slice(0, 80),
       paperNodes: tree.slice(0, 300).map((node) => ({
         name: node.name, component: node.component, section: node.sectionName,

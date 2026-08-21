@@ -12,6 +12,8 @@
     selected: new Map(),
     sequence: 0,
     semanticOverlays: new Map(),
+    sectionRoots: null,
+    sectionRootsAt: 0,
   };
 
   const root = document.createElement("x-paper-capture-root");
@@ -79,39 +81,133 @@
     return "rgb(255, 255, 255)";
   }
 
+  const SECTION_SELECTOR = [
+    "section", "[data-section]", "[data-framer-name*='section' i]",
+    "main > *", "[role='main'] > *",
+    "body > header", "body > nav", "body > footer",
+    "header[class]", "footer[class]"
+  ].join(",");
+
+  const MIN_SECTION_HEIGHT = 60;
+
   function semanticSectionRoots() {
-    const candidates = [...document.querySelectorAll("section, [data-section], [data-framer-name*='section' i]")]
-      .filter(visible);
-    const siblingGroups = new Map();
-    for (const candidate of candidates) {
-      const parent = candidate.parentElement;
-      if (!parent) continue;
-      if (!siblingGroups.has(parent)) siblingGroups.set(parent, []);
-      siblingGroups.get(parent).push(candidate);
-    }
-    const siblings = [...siblingGroups.values()]
-      .filter((group) => group.length > 1)
-      .sort((a, b) => b.length - a.length)[0];
-    const fallback = [...document.querySelectorAll("main > *, [role='main'] > *")].filter(visible);
-    const roots = siblings
-      || (fallback.length > 1 ? fallback : candidates.filter((candidate) =>
-        !candidates.some((other) => other !== candidate && other.contains(candidate))));
-    return [...roots].sort((a, b) => {
-      const aRect = a.getBoundingClientRect();
-      const bRect = b.getBoundingClientRect();
-      return (aRect.top + scrollY) - (bRect.top + scrollY);
+    const now = Date.now();
+    if (state.sectionRoots && now - state.sectionRootsAt < 1500) return state.sectionRoots;
+    const candidates = [...document.querySelectorAll(SECTION_SELECTOR)].filter((candidate) => {
+      if (!visible(candidate)) return false;
+      if (candidate.closest("x-paper-capture-root")) return false;
+      return candidate.getBoundingClientRect().height >= MIN_SECTION_HEIGHT;
     });
+    // Only outermost bands survive, so a card marked "section" never outranks the band holding it.
+    const roots = candidates.filter((candidate) =>
+      !candidates.some((other) => other !== candidate && other.contains(candidate)));
+    const ordered = roots.sort((a, b) => {
+      const position = a.compareDocumentPosition(b);
+      if (position & Node.DOCUMENT_POSITION_FOLLOWING) return -1;
+      if (position & Node.DOCUMENT_POSITION_PRECEDING) return 1;
+      return 0;
+    });
+    state.sectionRoots = ordered;
+    state.sectionRootsAt = now;
+    return ordered;
   }
 
+  // Site chrome above the first content band keeps the reserved "00", so hero always lands on 01.
+  function isChrome(root) {
+    const tag = root.tagName.toLowerCase();
+    const role = String(root.getAttribute("role") || "").toLowerCase();
+    return tag === "header" || tag === "nav" || role === "banner" || role === "navigation";
+  }
+
+  function sectionBands() {
+    const roots = semanticSectionRoots();
+    let start = 0;
+    while (start < roots.length && isChrome(roots[start])) start += 1;
+    return { chrome: roots.slice(0, start), bands: roots.slice(start) };
+  }
+
+  addEventListener("resize", () => { state.sectionRoots = null; }, { passive: true });
+
+  function sectionTopOf(element) {
+    return element.getBoundingClientRect().top + scrollY;
+  }
+
+  // Every take earns a real band number; "00" is reserved for the chrome above the first band.
   function sectionOf(element) {
-    const siblings = semanticSectionRoots();
-    const section = siblings.find((candidate) => candidate === element || candidate.contains(element));
-    if (!section) return { id: "00", label: "unassigned" };
-    const index = siblings.indexOf(section);
+    const { chrome, bands } = sectionBands();
+    const header = chrome.find((root) => root === element || root.contains(element));
+    if (header) return { id: "00", label: "header", root: header };
+    if (!bands.length) return { id: "01", label: "page", root: document.body };
+    let index = bands.findIndex((root) => root === element || root.contains(element));
+    if (index < 0) {
+      const top = sectionTopOf(element);
+      if (top < sectionTopOf(bands[0])) return { id: "00", label: "header", root: chrome[0] || bands[0] };
+      // Unwrapped element (portal, fixed overlay): claim the last band that starts above it.
+      for (let cursor = bands.length - 1; cursor >= 0; cursor -= 1) {
+        if (sectionTopOf(bands[cursor]) <= top) { index = cursor; break; }
+      }
+      if (index < 0) index = 0;
+    }
     return {
       id: String(index + 1).padStart(2, "0"),
-      label: textOf(section).slice(0, 48) || `section-${index + 1}`,
+      label: sectionSlug(bands[index], index),
+      root: bands[index],
     };
+  }
+
+  function sectionSlug(root, index) {
+    const heading = root.querySelector("h1,h2,h3,h4,h5,h6");
+    const named = root.getAttribute("data-framer-name") || root.getAttribute("data-section") || root.id || "";
+    const source = named || (heading ? textOf(heading) : "");
+    const slug = String(source).replace(/\s+/g, " ").trim().slice(0, 32);
+    const tag = root.tagName.toLowerCase();
+    return slug || (["header", "footer", "nav", "aside"].includes(tag) ? tag : `section-${index + 1}`);
+  }
+
+  const TYPE_TAGS = {
+    img: "Image", picture: "Image", svg: "Image", video: "Media", canvas: "Media",
+    input: "Field", textarea: "Field", select: "Field", form: "Form",
+    nav: "Nav", ul: "List", ol: "List", table: "Table", header: "Header", footer: "Footer"
+  };
+
+  // A generic type beats a text dump: layer names stay scannable and survive copy changes.
+  function elementType(element, kind) {
+    if (kind === "navbar") return "Navbar";
+    if (kind === "dropdown") return "Dropdown";
+    const tag = element.tagName.toLowerCase();
+    const role = String(element.getAttribute("role") || "").toLowerCase();
+    if (/^h[1-6]$/.test(tag)) return "Heading";
+    if (TYPE_TAGS[tag]) return TYPE_TAGS[tag];
+    if (role === "navigation") return "Nav";
+    if (role === "list") return "List";
+    if (semanticSectionRoots().includes(element)) return "Section";
+    const rect = element.getBoundingClientRect();
+    const blocks = [...element.children].filter(visible);
+    const display = blocks.find((child) => {
+      const size = parseFloat(getComputedStyle(child).fontSize);
+      return size >= 36 && /\d/.test(textOf(child));
+    });
+    if (display && blocks.length <= 3 && rect.height < 320) return "Stat";
+    if ((element.querySelector("h1,h2,h3,h4,h5,h6") || blocks.length >= 2) && rect.height >= 100) return "Card";
+    if (tag === "button" || role === "button" || tag === "a") return "Button";
+    if (["p", "span", "strong", "em", "label"].includes(tag)) return "Text";
+    return "Block";
+  }
+
+  // Peers share tag and class signature, so a card grid numbers 1..n instead of counting every div.
+  function ordinalIn(root, element) {
+    const scope = root && root !== element && root.contains(element)
+      ? root
+      : (element.parentElement || document.body);
+    const classes = element.getAttribute("class") || "";
+    const peers = [...scope.querySelectorAll(element.tagName)].filter((peer) =>
+      visible(peer) && (peer.getAttribute("class") || "") === classes);
+    const index = peers.indexOf(element);
+    return index >= 0 ? index + 1 : 1;
+  }
+
+  function genericLabel(element, kind, section) {
+    return `${elementType(element, kind)} ${ordinalIn(section?.root, element)}`;
   }
 
   const { targetFor } = globalThis.PaperCaptureTargeting;
@@ -197,7 +293,8 @@
       id: `take-${Date.now()}-${++state.sequence}`,
       mode: state.mode,
       kind: state.captureKind,
-      label: textOf(element) || state.captureKind,
+      label: genericLabel(element, state.captureKind, section),
+      text: textOf(element),
       tag: element.tagName.toLowerCase(),
       url: location.href,
       viewport: { width: innerWidth, height: innerHeight, dpr: devicePixelRatio || 1 },

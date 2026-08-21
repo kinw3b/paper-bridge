@@ -51,6 +51,7 @@ function textScore(node, census) {
 // Paper mirrors the page layout, so page coordinates disambiguate what text cannot:
 // duplicate copy (nav vs hero "Get Started Now") and images, which carry no text at all.
 function geometryScore(node, census, scale) {
+  if (!scale) return 0;
   if (!Number.isFinite(node.pageX) || !Number.isFinite(census.x)) return 0;
   const dx = Math.abs(node.pageX - census.x * scale);
   const dy = Math.abs(node.pageY - census.y * scale);
@@ -137,7 +138,11 @@ export async function applySemanticsToPaper({ call, doc, artboard = "home-deskto
   if (!board?.id) throw new Error(`No ${artboard} artboard exists in Paper`);
   const boardX = Number(board.worldX || 0);
   const boardY = Number(board.worldY || 0);
-  const scale = Number(board.width || 1600) / Number(doc.width || board.width || 1600);
+  const boardWidth = Number(board.width || 1600);
+  const docWidth = Number(doc.width || boardWidth);
+  // Responsive layouts do not reflow linearly, so page coordinates are only trustworthy
+  // when the census was captured at the artboard's own width.
+  const scale = Math.abs(boardWidth - docWidth) / boardWidth <= 0.02 ? boardWidth / docWidth : 0;
   const children = childrenOf(payload(await call("get_children", { nodeId: board.id })));
   const sections = children.filter((node) => /^\d{2}\s*·/.test(node.name || ""));
   const scanned = (doc.sections || []).reduce((count, section) => count + (section.nodes || []).length, 0);
@@ -203,6 +208,9 @@ export async function applySemanticsToPaper({ call, doc, artboard = "home-deskto
       paperSections: sections.map((node) => node.name),
       treeSize: tree.length,
       scale,
+      boardWidth,
+      docWidth,
+      geometryUsed: scale > 0,
       unmatched: unmatched.slice(0, 80),
       paperNodes: tree.slice(0, 300).map((node) => ({
         name: node.name, component: node.component, section: node.sectionName,

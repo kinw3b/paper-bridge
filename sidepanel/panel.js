@@ -682,7 +682,7 @@ function tagReport(capture, receipt) {
     status: "success",
     board: "home-desktop",
     meta: `${total} tags`,
-    note: `${receipt.renamed} tagged in Paper`,
+    note: `${receipt.matched} matched in Paper`,
     semanticReceipt: receipt,
   }];
   // Paper sections we scanned for but never found are the usual reason a tag never lands.

@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { applySemanticsToPaper } from "./semantics.mjs";
 
-const HOST_VERSION = "1.2.19";
+const HOST_VERSION = "1.2.23";
 const BOARD_NAMES = ["Navigation", "Hover States", "Components"];
 const MAX_MESSAGE_BYTES = 8 * 1024 * 1024;
 const MAX_HTML_BYTES = 220_000;
@@ -106,6 +107,58 @@ function mcpPayload(result) {
 
 function nodeId(payload) {
   return payload?.createdNodes?.[0]?.id || payload?.ids?.[0] || payload?.nodeId || payload?.id || null;
+}
+
+function captureToolHome() {
+  const override = String(process.env.PAPER_CAPTURE_HOME || "").trim();
+  if (override) return override;
+  if (process.platform === "darwin") {
+    return path.join(os.homedir(), "Library", "Application Support", "Paper Capture Tool");
+  }
+  return path.join(os.homedir(), ".paper-capture-tool");
+}
+
+function readJsonFile(file) {
+  try {
+    return JSON.parse(fs.readFileSync(file, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+export function readActiveSession() {
+  const explicit = String(process.env.PAPER_CAPTURE_SESSION || "").trim();
+  const candidates = [
+    explicit,
+    path.join(captureToolHome(), "active-session.json"),
+  ].filter(Boolean);
+  let session = null;
+  for (const file of candidates) {
+    const parsed = readJsonFile(file);
+    if (!parsed || typeof parsed !== "object") continue;
+    session = parsed;
+    break;
+  }
+  const projectRoot = String(session?.projectRoot || "").trim();
+  if (projectRoot) {
+    const paper = readJsonFile(path.join(projectRoot, "qa", "paper-file.json")) || {};
+    session = {
+      ...session,
+      paperFileId: session.paperFileId || paper.fileId || paper.paperFileId || "",
+      projectRoot,
+      paperEndpoint: session.paperEndpoint || paper.paperEndpoint || "",
+      url: session.url || paper.url || "",
+    };
+  }
+  const paperFileId = String(session?.paperFileId || "").trim();
+  const root = String(session?.projectRoot || "").trim();
+  if (!paperFileId && !root) return null;
+  return {
+    paperFileId,
+    projectRoot: root,
+    paperEndpoint: String(session?.paperEndpoint || "").trim(),
+    url: String(session?.url || "").trim(),
+  };
 }
 
 function assertConfig(next) {
@@ -474,7 +527,13 @@ function completeSession(summary) {
 }
 
 async function handle(message) {
-  if (message.type === "PING") return { version: HOST_VERSION, host: "paper-capture-extension" };
+  if (message.type === "PING") {
+    return {
+      version: HOST_VERSION,
+      host: "paper-capture-extension",
+      session: readActiveSession(),
+    };
+  }
   if (message.type === "START_SESSION") return startSession(message.config);
   if (message.type === "COMMIT_TAKE") {
     if (!config) throw new Error("Start the capture session first");

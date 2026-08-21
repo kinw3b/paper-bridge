@@ -1,3 +1,5 @@
+import { parseHref } from "../shared/session-url.js";
+
 const HOST_NAME = "com.kreativepro.paper_capture";
 
 const STAGES = [
@@ -44,6 +46,8 @@ const ui = Object.fromEntries([
 let port = null;
 let requestSequence = 0;
 let activeTab = null;
+let sourceTabId = null;
+let sourceUrl = "";
 let stageIndex = 0;
 let navKind = "navbar";
 let pairDraft = null;
@@ -71,20 +75,6 @@ function applySession(session, { overwrite = false } = {}) {
   }
 }
 
-function parseHref(href) {
-  try {
-    const url = new URL(href);
-    const hash = new URLSearchParams(url.hash.startsWith("#") ? url.hash.slice(1) : url.hash);
-    const paperFileId = (url.searchParams.get("paperFileId") || hash.get("paperFileId") || "").trim();
-    const projectRoot = (url.searchParams.get("projectRoot") || hash.get("projectRoot") || "").trim();
-    const paperEndpoint = (url.searchParams.get("paperEndpoint") || hash.get("paperEndpoint") || "").trim();
-    if (!paperFileId && !projectRoot) return null;
-    return { paperFileId, projectRoot, paperEndpoint };
-  } catch {
-    return null;
-  }
-}
-
 async function sessionFromOpenTab() {
   const tabs = await chrome.tabs.query({});
   for (const tab of tabs) {
@@ -94,36 +84,8 @@ async function sessionFromOpenTab() {
   return null;
 }
 
-async function hydrateFromOpenTab() {
-  const session = await sessionFromOpenTab();
-  if (!session) return;
-  applySession(session, { overwrite: true });
-  await chrome.storage.local.set({
-    paperFileId: session.paperFileId,
-    projectRoot: session.projectRoot,
-    captureAutostart: true,
-    ...(session.paperEndpoint ? { paperEndpoint: session.paperEndpoint } : {}),
-  });
-}
-
-let autoStarted = false;
-
-async function maybeAutoStart() {
-  if (autoStarted || ui.setup.hidden) return;
-  const fromTab = await sessionFromOpenTab();
-  const stored = await chrome.storage.local.get(["paperFileId", "projectRoot", "captureAutostart"]);
-  if (!fromTab && !stored.captureAutostart) return;
-  if (fromTab) applySession(fromTab, { overwrite: true });
-  const paperFileId = ui.paperFileId.value.trim();
-  const projectRoot = ui.projectRoot.value.trim();
-  if (!paperFileId || !projectRoot.startsWith("/")) return;
-  autoStarted = true;
-  await chrome.storage.local.remove("captureAutostart");
-  await startCapture();
-}
-
 function connectHost() {
-  if (port) return Promise.resolve();
+  if (port) return Promise.resolve(null);
   return new Promise((resolve, reject) => {
     try {
       port = chrome.runtime.connectNative(HOST_NAME);
@@ -145,12 +107,6 @@ function connectHost() {
         if (message.ok) pendingRequest.resolve(message);
         else pendingRequest.reject(new Error(message.error || "Native bridge request failed"));
       }
-      if (!settled) {
-        settled = true;
-        clearTimeout(timer);
-        setConnection(true);
-        resolve();
-      }
     });
     port.onDisconnect.addListener(() => {
       const error = chrome.runtime.lastError?.message || "Native bridge disconnected";
@@ -166,8 +122,21 @@ function connectHost() {
     });
     const requestId = `connect-${Date.now()}`;
     requests.set(requestId, {
-      resolve: () => {},
-      reject: () => {},
+      resolve: (message) => {
+        if (!settled) {
+          settled = true;
+          clearTimeout(timer);
+          setConnection(true);
+          resolve(message);
+        }
+      },
+      reject: (error) => {
+        if (!settled) {
+          settled = true;
+          clearTimeout(timer);
+          reject(error);
+        }
+      },
     });
     port.postMessage({ requestId, type: "PING" });
   });
@@ -206,6 +175,50 @@ async function currentTab() {
   throw new Error("Open the source URL in this tab before starting capture");
 }
 
+function rememberSourceTab(tab) {
+  if (!tab?.id) return tab;
+  activeTab = tab;
+  sourceTabId = tab.id;
+  sourceUrl = cleanSourceUrl(tab.url || sourceUrl || "");
+  return tab;
+}
+
+async function resolveSourceTab() {
+  if (sourceTabId) {
+    try {
+      const tab = await chrome.tabs.get(sourceTabId);
+      if (tab?.id && !tab.discarded) return rememberSourceTab(tab);
+    } catch { /* tab was closed or was a capture popup */ }
+  }
+  if (sourceUrl) {
+    const tabs = await chrome.tabs.query({});
+    const needle = sourceUrl.replace(/\/$/, "");
+    const match = tabs.find((tab) => cleanSourceUrl(tab.url || "").replace(/\/$/, "") === needle);
+    if (match?.id) return rememberSourceTab(match);
+  }
+  return rememberSourceTab(await currentTab());
+}
+
+function isMissingReceiver(error) {
+  return /Receiving end does not exist|Could not establish connection/i.test(String(error?.message || error || ""));
+}
+
+async function ensureInjected(tabId) {
+  const injected = await chrome.runtime.sendMessage({ type: "HC_INJECT", tabId });
+  if (!injected?.ok) throw new Error(injected?.error || "Could not load Capture Tool on the source tab");
+}
+
+async function pageMessage(message) {
+  const tab = await resolveSourceTab();
+  try {
+    return await chrome.tabs.sendMessage(tab.id, message);
+  } catch (error) {
+    if (!isMissingReceiver(error)) throw error;
+    await ensureInjected(tab.id);
+    return chrome.tabs.sendMessage(tab.id, message);
+  }
+}
+
 function cleanSourceUrl(href) {
   try {
     const url = new URL(href);
@@ -216,8 +229,7 @@ function cleanSourceUrl(href) {
     for (const key of ["paperFileId", "projectRoot", "paperEndpoint", "paper-capture"]) {
       hash.delete(key);
     }
-    const nextHash = hash.toString();
-    url.hash = nextHash;
+    url.hash = hash.toString();
     return url.href;
   } catch {
     return href;
@@ -303,14 +315,15 @@ function renderStage() {
   ui.recordButton.innerHTML = `<span></span>${recordLabel}`;
   renderNavbarProgress();
   renderTakes();
-  chrome.tabs.sendMessage(activeTab.id, {
+  if (!activeTab?.id) return;
+  pageMessage({
     type: "HC_SET_RECORDING",
     recording: false,
     mode: item.id,
     captureKind: currentKind(),
   }).catch(() => {});
   if (item.id === "tags") {
-    chrome.tabs.sendMessage(activeTab.id, { type: "HC_SHOW_TAG_OUTLINES" }).catch(() => {});
+    pageMessage({ type: "HC_SHOW_TAG_OUTLINES" }).catch(() => {});
   }
 }
 
@@ -392,13 +405,12 @@ async function startCapture() {
     const paperEndpoint = ui.paperEndpoint.value.trim();
     if (!paperFileId) throw new Error("Paper file ID is required so writes cannot drift to another file");
     if (!projectRoot.startsWith("/")) throw new Error("Project folder must be an absolute path");
-    activeTab = await currentTab();
+    activeTab = rememberSourceTab(await currentTab());
     await connectHost();
     await nativeRequest("START_SESSION", {
       config: { paperFileId, projectRoot, paperEndpoint, sourceUrl: cleanSourceUrl(activeTab.url) },
     });
-    const injected = await chrome.runtime.sendMessage({ type: "HC_INJECT", tabId: activeTab.id });
-    if (!injected?.ok) throw new Error(injected?.error || "Could not load Capture Tool on the source tab");
+    await ensureInjected(activeTab.id);
     await chrome.storage.local.set({ paperFileId, projectRoot, paperEndpoint });
     ui.setup.hidden = true;
     ui.workspace.hidden = false;
@@ -511,7 +523,7 @@ async function handleCapture(capture) {
 async function captureNavbarBreakpoints(capture) {
   pending += 1;
   ui.captureError.textContent = "";
-  setActivity("Capturing Tablet 768 and Mobile 390 Navbar in the background…", true);
+  setActivity("Capturing Tablet 768 and Mobile 390 Navbar…", true);
   renderStage();
   try {
     const result = await chrome.runtime.sendMessage({
@@ -536,30 +548,37 @@ async function captureNavbarBreakpoints(capture) {
   } finally {
     pending -= 1;
     renderStage();
+    if (sourceTabId) ensureInjected(sourceTabId).catch(() => {});
   }
 }
 
 async function toggleRecord() {
   ui.captureError.textContent = "";
-  if (stage().id === "tags") {
-    await runAuto();
-    return;
-  }
-  if (ui.autoMode.checked) {
-    await runAuto();
-    return;
-  }
-  if (recording) {
-    setRecording(false);
-    await chrome.tabs.sendMessage(activeTab.id, {
-      type: "HC_SET_RECORDING", recording: false, mode: stage().id, captureKind: currentKind(),
+  try {
+    if (stage().id === "tags") {
+      await runAuto();
+      return;
+    }
+    if (ui.autoMode.checked) {
+      await runAuto();
+      return;
+    }
+    if (recording) {
+      setRecording(false);
+      await pageMessage({
+        type: "HC_SET_RECORDING", recording: false, mode: stage().id, captureKind: currentKind(),
+      });
+      return;
+    }
+    setRecording(true);
+    await pageMessage({
+      type: "HC_SET_RECORDING", recording: true, mode: stage().id, captureKind: currentKind(),
     });
-    return;
+  } catch (error) {
+    setRecording(false);
+    ui.captureError.textContent = error.message;
+    setActivity("");
   }
-  setRecording(true);
-  await chrome.tabs.sendMessage(activeTab.id, {
-    type: "HC_SET_RECORDING", recording: true, mode: stage().id, captureKind: currentKind(),
-  });
 }
 
 async function runAuto() {
@@ -568,14 +587,16 @@ async function runAuto() {
   setActivity("Auto is scanning visible candidates…", true);
   try {
     if (stage().id === "hover") {
-      const result = await chrome.runtime.sendMessage({ type: "HC_AUTO_HOVER", tabId: activeTab.id });
+      const tab = await resolveSourceTab();
+      await ensureInjected(tab.id);
+      const result = await chrome.runtime.sendMessage({ type: "HC_AUTO_HOVER", tabId: tab.id });
       if (!result?.ok) throw new Error(result?.error || "Auto Hover failed");
       for (const capture of result.captures || []) await commitTake(capture);
       if (!result.captures?.length) throw new Error("Auto did not find a safe hover candidate");
       return;
     }
     if (stage().id === "tags") {
-      const result = await chrome.tabs.sendMessage(activeTab.id, { type: "HC_AUTO_TAGS" });
+      const result = await pageMessage({ type: "HC_AUTO_TAGS" });
       if (!result?.ok) throw new Error(result?.error || "Tag scan failed");
       pending += 1;
       renderStage();
@@ -602,7 +623,7 @@ async function runAuto() {
     if (stage().id === "nav" && navKind === "dropdown" || stage().id === "multi") {
       throw new Error("Dropdown and Multi-state use two manual takes so Capture Tool never invents an open state");
     }
-    const result = await chrome.tabs.sendMessage(activeTab.id, {
+    const result = await pageMessage({
       type: "HC_AUTO_SINGLE", mode: stage().id, captureKind: currentKind(),
     });
     if (!result?.ok) throw new Error(result?.error || "Auto did not find a safe candidate");
@@ -637,7 +658,7 @@ async function finishSession() {
         boards: [...new Set(takes.filter((take) => take.board).map((take) => take.board))],
       },
     });
-    await chrome.tabs.sendMessage(activeTab.id, { type: "HC_DEACTIVATE" }).catch(() => {});
+    await pageMessage({ type: "HC_DEACTIVATE" }).catch(() => {});
     ui.workspace.hidden = true;
     ui.complete.hidden = false;
     setConnection(true, "Complete");
@@ -687,6 +708,34 @@ for (const button of ui.navKindPicker.querySelectorAll(".kind")) {
   });
 }
 
+async function hydrateFromOpenTab() {
+  const session = await sessionFromOpenTab();
+  if (!session) return;
+  applySession(session, { overwrite: true });
+  await chrome.storage.local.set({
+    paperFileId: session.paperFileId,
+    projectRoot: session.projectRoot,
+    captureAutostart: true,
+    ...(session.paperEndpoint ? { paperEndpoint: session.paperEndpoint } : {}),
+  });
+}
+
+let autoStarted = false;
+
+async function maybeAutoStart() {
+  if (autoStarted || ui.setup.hidden) return;
+  const fromTab = await sessionFromOpenTab();
+  const stored = await chrome.storage.local.get(["paperFileId", "projectRoot", "captureAutostart"]);
+  if (!fromTab && !stored.captureAutostart) return;
+  if (fromTab) applySession(fromTab, { overwrite: true });
+  const paperFileId = ui.paperFileId.value.trim();
+  const projectRoot = ui.projectRoot.value.trim();
+  if (!paperFileId || !projectRoot.startsWith("/")) return;
+  autoStarted = true;
+  await chrome.storage.local.remove("captureAutostart");
+  await startCapture();
+}
+
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== "local") return;
   applySession({
@@ -705,12 +754,14 @@ chrome.tabs.onActivated.addListener(() => {
 });
 
 chrome.storage.local.get(["paperFileId", "projectRoot", "paperEndpoint"]).then(async (saved) => {
+  ui.paperEndpoint.value = saved.paperEndpoint || "http://127.0.0.1:29979/mcp";
   applySession(saved);
-  ui.paperEndpoint.value = saved.paperEndpoint || ui.paperEndpoint.value || "http://127.0.0.1:29979/mcp";
   await hydrateFromOpenTab();
+  try {
+    const ping = await connectHost();
+    applySession(ping?.session);
+  } catch (error) {
+    ui.setupError.textContent = error.message;
+  }
   await maybeAutoStart();
-});
-
-connectHost().catch((error) => {
-  ui.setupError.textContent = error.message;
 });

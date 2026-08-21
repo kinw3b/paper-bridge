@@ -25,11 +25,11 @@ The web2html skill opens this panel during a run. You record the live page; the 
 
 ## Versioning
 
-Release tags match `manifest.json` `version` (for example `1.2.19`). Tag the commit that ships that version; do not reuse a tag.
+Release tags match `manifest.json` `version` (for example `1.2.23`). Tag the commit that ships that version; do not reuse a tag.
 
 ```bash
-git tag -a 1.2.19 -m "Paper Capture Tool 1.2.19"
-git push origin 1.2.19
+git tag -a 1.2.23 -m "Paper Capture Tool 1.2.23"
+git push origin 1.2.23
 ```
 
 ## Uninstall

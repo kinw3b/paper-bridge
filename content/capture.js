@@ -214,59 +214,143 @@
 
   function paintedCta(element) {
     if (!visible(element)) return false;
-    if (element.matches("button,[role='button'],input[type='submit']")) return true;
-    if (!element.matches("a[href]")) return false;
-    const style = getComputedStyle(element);
-    const background = style.backgroundColor;
-    const paintedBackground = background && !/rgba?\(0, 0, 0(?:, 0)?\)|transparent/i.test(background);
-    const paintedBorder = ["Top", "Right", "Bottom", "Left"].some((side) =>
-      Number.parseFloat(style[`border${side}Width`] || "0") > 0);
-    return paintedBackground || paintedBorder;
+    const nodes = [element, ...element.querySelectorAll("div,span,p,button,a")].slice(0, 16);
+    return nodes.some((node) => {
+      if (!visible(node)) return false;
+      const style = getComputedStyle(node);
+      const background = style.backgroundColor;
+      const paintedBackground = background && !/rgba?\(0,\s*0,\s*0(?:,\s*0)?\)|transparent/i.test(background);
+      const paintedImage = Boolean(style.backgroundImage && style.backgroundImage !== "none");
+      const paintedBorder = ["Top", "Right", "Bottom", "Left"].some((side) =>
+        Number.parseFloat(style[`border${side}Width`] || "0") > 0);
+      return paintedBackground || paintedImage || paintedBorder;
+    });
   }
 
-  function navbarCandidateRows() {
-    const candidates = new Set([...document.querySelectorAll("header,nav,[role='banner'],[role='navigation']")]);
-    const seeds = document.querySelectorAll("a[href],button,[role='button'],img,svg,[aria-haspopup],[data-framer-name*='logo' i],[data-framer-name*='menu' i]");
+  function tinyMark(node) {
+    const rect = node.getBoundingClientRect();
+    return rect.width <= 16 && rect.height <= 16;
+  }
+
+  function homeHref(link) {
+    try {
+      const url = new URL(link.href, location.href);
+      return url.origin === location.origin
+        && (url.pathname === "/" || url.pathname === "" || url.pathname === location.pathname);
+    } catch {
+      return false;
+    }
+  }
+
+  function tooLargeForNavbar(element, view = {}) {
+    const tag = String(element.tagName || "");
+    if (/^(HTML|BODY|MAIN)$/i.test(tag)) return true;
+    const rect = element.getBoundingClientRect();
+    const vh = Number(view.height) || innerHeight || 900;
+    const maxH = Math.min(280, vh * 0.32);
+    if (/^(HEADER|SECTION|FOOTER|ARTICLE|NAV)$/i.test(tag) && rect.height > maxH) return true;
+    return rect.height > Math.min(360, vh * 0.4);
+  }
+
+  function hasLogoEvidence(bar, links) {
+    const barRect = bar.getBoundingClientRect();
+    const named = "[data-framer-name*='logo' i],[data-framer-name*='brand' i],[aria-label*='logo' i],img[alt*='logo' i]";
+    if (bar.matches?.(named) || bar.querySelector(named)) return true;
+    const leftLimit = barRect.left + Math.min(280, barRect.width * 0.35);
+    const leftmost = [...links].sort((a, b) => a.getBoundingClientRect().left - b.getBoundingClientRect().left)[0];
+    if (leftmost) {
+      const left = leftmost.getBoundingClientRect().left;
+      if (left <= leftLimit && homeHref(leftmost)) return true;
+      const mark = leftmost.querySelector("svg,img");
+      if (left <= leftLimit && mark && !tinyMark(mark)) return true;
+    }
+    return [...bar.querySelectorAll("svg,img")].filter(visible).some((mark) => {
+      const rect = mark.getBoundingClientRect();
+      return rect.left <= leftLimit && !tinyMark(mark);
+    });
+  }
+
+  function hasMenuControl(bar, barRect) {
+    const nodes = [...bar.querySelectorAll("button,[role='button'],[aria-label],[aria-expanded],[aria-controls],[data-framer-name],svg")];
+    return nodes.some((node) => {
+      if (!visible(node)) return false;
+      const box = node.getBoundingClientRect();
+      const hint = `${textOf(node)} ${node.getAttribute("aria-label") || ""} ${node.getAttribute("data-framer-name") || ""}`;
+      if (/menu|hamburger|burger|nav-?toggle|navigation/i.test(hint)
+        && box.width <= 120 && box.height <= 120 && box.width >= 16 && box.height >= 16) {
+        return true;
+      }
+      const rightish = box.left >= barRect.left + barRect.width * 0.55;
+      const square = box.width >= 20 && box.width <= 80
+        && box.height >= 20 && box.height <= 80
+        && Math.abs(box.width - box.height) <= 24;
+      const svg = node.tagName === "SVG" ? node : node.querySelector?.("svg");
+      return Boolean(rightish && square && svg && !tinyMark(svg));
+    });
+  }
+
+  function navbarCandidateRows(view = {}) {
+    const viewW = Number(view.width) || innerWidth;
+    const viewH = Number(view.height) || innerHeight;
+    const candidates = new Set();
+    for (const landmark of document.querySelectorAll("header,nav,[role='banner'],[role='navigation']")) {
+      if (!tooLargeForNavbar(landmark, { height: viewH })) candidates.add(landmark);
+    }
+    const seeds = document.querySelectorAll("a[href],a,button,[role='button'],[role='link'],img,svg,[aria-haspopup],[data-framer-name*='logo' i],[data-framer-name*='brand' i],[data-framer-name*='menu' i],[data-framer-name*='nav' i],[data-framer-name*='burger' i],[data-framer-name='Phone'],[data-framer-name='Tablet'],[data-framer-name='header-area']");
     for (const seed of seeds) {
       let current = seed;
       for (let depth = 0; current && depth < 9; depth += 1, current = current.parentElement) {
-        if (current === document.body || current === document.documentElement) break;
-        const rect = current.getBoundingClientRect();
-        if (rect.height > Math.min(360, innerHeight * 0.4)) break;
+        if (tooLargeForNavbar(current, { height: viewH })) break;
         candidates.add(current);
+      }
+    }
+    for (const y of [20, 40, 64, 88]) {
+      for (const x of [24, Math.round(viewW / 2), Math.max(24, viewW - 24)]) {
+        let stack = [];
+        try { stack = document.elementsFromPoint(x, y) || []; } catch { stack = []; }
+        for (const seed of stack) {
+          if (!(seed instanceof Element)) continue;
+          let current = seed;
+          for (let depth = 0; current && depth < 8; depth += 1, current = current.parentElement) {
+            if (tooLargeForNavbar(current, { height: viewH })) break;
+            candidates.add(current);
+          }
+        }
       }
     }
     return [...candidates].filter(visible).map((element) => {
       const rect = element.getBoundingClientRect();
-      const links = [...element.querySelectorAll("a[href]")].filter(visible);
+      const links = [...element.querySelectorAll("a[href],[role='link']")].filter(visible);
       const buttons = [...element.querySelectorAll("button,[role='button']")].filter(visible);
-      const logoSelector = "[data-framer-name*='logo' i],[aria-label*='logo' i],img[alt*='logo' i],a[href] img,a[href] svg";
-      const hasLogo = Boolean(element.matches?.(logoSelector) || element.querySelector(logoSelector));
-      const logoLinks = new Set(links.filter((link) => link.matches(logoSelector) || link.querySelector("img,svg,[data-framer-name*='logo' i]")));
+      const hasLogo = hasLogoEvidence(element, links);
+      const hasMenuButton = hasMenuControl(element, rect);
+      const logoLinks = new Set(links.filter((link) => {
+        const mark = link.querySelector("svg,img");
+        const named = /logo|brand/i.test(`${link.getAttribute("data-framer-name") || ""} ${link.getAttribute("aria-label") || ""}`);
+        return named || (hasLogo && homeHref(link) && mark && !tinyMark(mark));
+      }));
       const navLinks = links.filter((link) => !logoLinks.has(link));
-      const dropdown = element.querySelector("[aria-haspopup='menu'],[aria-expanded],[role='menu'],[data-framer-name*='dropdown' i],[data-framer-name*='mega' i]");
+      const ctaNodes = [...element.querySelectorAll("a,button,[role='button'],[data-framer-name*='button' i]")].filter(visible);
+      const dropdown = element.querySelector("[aria-haspopup='menu'],[aria-haspopup='true'],[role='menu'],[data-framer-name*='dropdown' i],[data-framer-name*='mega' i]");
       return {
         ...fingerprintNav(element),
         element,
         rect: { top: rect.top, width: rect.width, height: rect.height },
-        viewport: { width: innerWidth, height: innerHeight },
+        viewport: { width: viewW, height: viewH },
         hasLogo,
         navLinkCount: navLinks.length,
-        hasCta: [...navLinks, ...buttons].some(paintedCta),
+        hasCta: ctaNodes.some(paintedCta),
         hasDropdown: Boolean(dropdown),
-        hasMenuButton: buttons.some((button) => /menu|navigation/i.test(textOf(button)))
-          || buttons.some((button) => {
-            const box = button.getBoundingClientRect();
-            return box.width >= 24 && box.width <= 72 && box.height >= 24 && box.height <= 72;
-          }),
-        interactiveCount: links.length + buttons.length,
+        hasMenuButton,
+        interactiveCount: links.length + buttons.length + ctaNodes.length + (hasMenuButton ? 1 : 0),
       };
     });
   }
 
-  function responsiveNavbar(fingerprint) {
-    const rows = navbarCandidateRows();
-    return pickNavCandidate(rows, fingerprint);
+  function responsiveNavbar(fingerprint, spec = {}) {
+    const view = { width: Number(spec.width) || innerWidth, height: Number(spec.height) || innerHeight };
+    const rows = navbarCandidateRows(view);
+    return pickNavCandidate(rows, fingerprint) || (view.width <= 900 ? pickNavCandidate(rows, {}) : null);
   }
 
   function autoNavbarTarget() {
@@ -530,9 +614,18 @@
       return false;
     }
     if (message.type === "HC_CAPTURE_NAV_BREAKPOINT") {
-      const picked = responsiveNavbar(message.fingerprint || {});
+      const spec = message.spec || {};
+      const rows = navbarCandidateRows({
+        width: Number(spec.width) || innerWidth,
+        height: Number(spec.height) || innerHeight,
+      });
+      const picked = pickNavCandidate(rows, message.fingerprint || {})
+        || (Number(spec.width || innerWidth) <= 900 ? pickNavCandidate(rows, {}) : null);
       if (!picked?.element) {
-        sendResponse({ ok: false, error: `No safe Navbar match at ${message.spec?.width || innerWidth}px` });
+        sendResponse({
+          ok: false,
+          error: `No safe Navbar match at ${spec.width || innerWidth}px (page ${innerWidth}×${innerHeight}, ${rows.length} candidates)`,
+        });
         return false;
       }
       try {

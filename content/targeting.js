@@ -23,8 +23,8 @@
 
   /** Auto/full-navbar capture is the only implicit wrapper lookup. */
   function fullNavbarFor(element) {
-    return element?.closest?.("nav, header, [role='navigation']")
-      || element?.closest?.("[data-framer-name*='Nav'], [data-framer-name*='Header']")
+    return element?.closest?.("nav, [role='navigation']")
+      || element?.closest?.("[data-framer-name*='Nav']:not([data-framer-name*='Hero'])")
       || element;
   }
 

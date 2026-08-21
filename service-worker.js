@@ -1,3 +1,5 @@
+import { normalizeSession } from "./shared/session-url.js";
+
 const PROTOCOL = "1.3";
 const NAV_BREAKPOINTS = [
   { name: "tablet", width: 768, height: 1024 },
@@ -19,20 +21,27 @@ function tabSend(tabId, message) {
 }
 
 async function inject(tabId) {
-  try {
-    const pong = await tabSend(tabId, { type: "HC_PING" });
-    if (pong?.ok) return { ok: true, reused: true };
-  } catch { /* inject below */ }
-
-  await chrome.scripting.insertCSS({
-    target: { tabId },
-    files: ["content/capture.css"],
-  });
-  await chrome.scripting.executeScript({
-    target: { tabId },
-    files: ["content/targeting.js", "content/nav-breakpoints.js", "content/capture.js"],
-  });
-  return { ok: true, reused: false };
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    try {
+      const pong = await tabSend(tabId, { type: "HC_PING" });
+      if (pong?.ok) return { ok: true, reused: true };
+    } catch { /* inject below */ }
+    try {
+      await chrome.scripting.insertCSS({
+        target: { tabId },
+        files: ["content/capture.css"],
+      });
+      await chrome.scripting.executeScript({
+        target: { tabId },
+        files: ["content/targeting.js", "content/nav-breakpoints.js", "content/capture.js"],
+      });
+      return { ok: true, reused: false };
+    } catch (error) {
+      if (attempt === 4) throw error;
+      await sleep(350);
+    }
+  }
+  return { ok: true };
 }
 
 function attach(tabId) {
@@ -132,6 +141,14 @@ async function autoHover(tabId) {
   return { ok: true, captures, scanned: targets.length };
 }
 
+function sameOrigin(tabUrl, expectedUrl) {
+  try {
+    return new URL(tabUrl).origin === new URL(expectedUrl).origin;
+  } catch {
+    return Boolean(tabUrl && expectedUrl && String(tabUrl).startsWith(String(expectedUrl)));
+  }
+}
+
 function waitForTabComplete(tabId, expectedUrl, timeout = 45000) {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => finish(new Error("Responsive Navbar tab timed out")), timeout);
@@ -141,37 +158,74 @@ function waitForTabComplete(tabId, expectedUrl, timeout = 45000) {
       if (error) reject(error);
       else resolve();
     };
+    const ready = (tab) => {
+      if (!tab || tab.status !== "complete") return false;
+      const href = tab.url || "";
+      if (!href || href === "about:blank" || href.startsWith("chrome:")) return false;
+      return !expectedUrl || sameOrigin(href, expectedUrl);
+    };
     const onUpdated = (updatedId, change, tab) => {
       if (updatedId !== tabId || change.status !== "complete") return;
-      if (expectedUrl && tab.url && !tab.url.startsWith(expectedUrl)) return;
-      finish();
+      if (ready(tab)) finish();
     };
     chrome.tabs.onUpdated.addListener(onUpdated);
     chrome.tabs.get(tabId).then((tab) => {
-      if (tab.status === "complete" && (!expectedUrl || tab.url?.startsWith(expectedUrl))) finish();
+      if (ready(tab)) finish();
     }).catch(finish);
   });
 }
 
+async function pageSize(tabId) {
+  const [shot] = await chrome.scripting.executeScript({
+    target: { tabId },
+    func: () => ({ width: innerWidth, height: innerHeight }),
+  });
+  return shot?.result || { width: 0, height: 0 };
+}
+
+async function lockViewport(tabId, spec) {
+  const metrics = {
+    width: spec.width,
+    height: spec.height,
+    screenWidth: spec.width,
+    screenHeight: spec.height,
+    deviceScaleFactor: 1,
+    mobile: spec.width <= 768,
+  };
+  let last = { width: 0, height: 0 };
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    await cdp(tabId, "Emulation.setDeviceMetricsOverride", metrics);
+    await sleep(450);
+    last = await pageSize(tabId);
+    if (Math.abs(Number(last.width) - spec.width) <= 48) {
+      await sleep(900);
+      return last;
+    }
+  }
+  throw new Error(`Viewport stayed at ${last.width}×${last.height}, wanted ${spec.width}×${spec.height}`);
+}
+
 async function captureNavBreakpoint(url, fingerprint, spec) {
-  const tab = await chrome.tabs.create({ url: "about:blank", active: false });
+  const previous = await chrome.windows.getLastFocused().catch(() => null);
+  const win = await chrome.windows.create({
+    url,
+    type: "popup",
+    focused: true,
+    width: spec.width,
+    height: spec.height + 80,
+    left: 24,
+    top: 24,
+  });
+  const tabId = win.tabs?.[0]?.id || (await chrome.tabs.query({ windowId: win.id }))[0]?.id;
+  if (!tabId) throw new Error(`Navbar ${spec.width} window had no tab`);
   let attached = false;
   try {
-    await attach(tab.id);
+    await waitForTabComplete(tabId, url);
+    await attach(tabId);
     attached = true;
-    await cdp(tab.id, "Emulation.setDeviceMetricsOverride", {
-      width: spec.width,
-      height: spec.height,
-      screenWidth: spec.width,
-      screenHeight: spec.height,
-      deviceScaleFactor: 1,
-      mobile: false,
-    });
-    await chrome.tabs.update(tab.id, { url, active: false });
-    await waitForTabComplete(tab.id, url);
-    await sleep(1200);
-    await inject(tab.id);
-    const result = await tabSend(tab.id, {
+    await lockViewport(tabId, spec);
+    await inject(tabId);
+    const result = await tabSend(tabId, {
       type: "HC_CAPTURE_NAV_BREAKPOINT",
       fingerprint,
       spec,
@@ -181,8 +235,9 @@ async function captureNavBreakpoint(url, fingerprint, spec) {
     }
     return result.capture;
   } finally {
-    if (attached) await detach(tab.id);
-    await chrome.tabs.remove(tab.id).catch(() => {});
+    if (attached) await detach(tabId);
+    await chrome.windows.remove(win.id).catch(() => {});
+    if (previous?.id) await chrome.windows.update(previous.id, { focused: true }).catch(() => {});
   }
 }
 
@@ -211,6 +266,27 @@ async function captureNavBreakpoints(url, fingerprint) {
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!message || typeof message.type !== "string") return false;
+
+  if (message.type === "HC_SESSION_FROM_PAGE") {
+    // Page-supplied — validate before it reaches storage. A rejected session is
+    // not an error the page should be able to distinguish, so answer the same
+    // shape either way.
+    const session = normalizeSession(message.session);
+    if (!session) {
+      sendResponse({ ok: false, error: "Session parameters were rejected" });
+      return true;
+    }
+    const stored = {
+      paperFileId: session.paperFileId || "",
+      projectRoot: session.projectRoot || "",
+      captureAutostart: true,
+    };
+    if (session.paperEndpoint) stored.paperEndpoint = session.paperEndpoint;
+    chrome.storage.local.set(stored).then(() => sendResponse({ ok: true }), (error) => {
+      sendResponse({ ok: false, error: error.message });
+    });
+    return true;
+  }
 
   if (message.type === "HC_INJECT") {
     inject(message.tabId).then(sendResponse, (error) => {

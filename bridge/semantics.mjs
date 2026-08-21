@@ -27,25 +27,50 @@ function isTextLayer(node) {
   return /text|richtext/i.test(node.component || "") || Boolean(node.textContent);
 }
 
+// Paper renders images as Rectangles with an image fill, so shape layers count too.
 function isImageLayer(node) {
-  return /image|img|svg|picture/i.test(`${node.component || ""} ${node.name || ""}`);
+  return /image|img|svg|picture|rectangle/i.test(`${node.component || ""} ${node.name || ""}`);
 }
 
-// Score one census entry against every Paper node. Exact text wins; a text tag never
-// takes an image or shape layer, which is how <p> ended up renaming a Rectangle.
-function scorePaperNode(node, census) {
+function typeFits(node, tag) {
+  if (tag === "img") return isImageLayer(node) && !isTextLayer(node);
+  if (/^h[1-6]$/.test(tag) || ["p", "span", "li"].includes(tag)) return isTextLayer(node);
+  return true;
+}
+
+function textScore(node, census) {
   const want = norm(census.text || census.alt);
-  const tag = String(census.tag || "").toLowerCase();
-  if (/^\d{2}\s*·/.test(node.name || "")) return 0;
-  if (tag === "img") return isImageLayer(node) ? (Number(node.childCount || 0) === 0 ? 2 : 1) : 0;
-  if (!want) return 0;
-  if (!isTextLayer(node)) return 0;
   const text = norm(node.textContent);
-  if (!text) return 0;
+  if (!want || !text) return 0;
   if (text === want) return 6;
   if (text.startsWith(want) || want.startsWith(text)) return 4;
   if (text.includes(want) || want.includes(text)) return 2;
   return 0;
+}
+
+// Paper mirrors the page layout, so page coordinates disambiguate what text cannot:
+// duplicate copy (nav vs hero "Get Started Now") and images, which carry no text at all.
+function geometryScore(node, census, scale) {
+  if (!Number.isFinite(node.pageX) || !Number.isFinite(census.x)) return 0;
+  const dx = Math.abs(node.pageX - census.x * scale);
+  const dy = Math.abs(node.pageY - census.y * scale);
+  const distance = dx + dy;
+  if (distance > 120) return 0;
+  if (distance <= 4) return 6;
+  if (distance <= 16) return 4;
+  if (distance <= 48) return 2;
+  return 1;
+}
+
+function scorePaperNode(node, census, scale) {
+  const tag = String(census.tag || "").toLowerCase();
+  if (/^\d{2}\s*·/.test(node.name || "")) return 0;
+  if (!typeFits(node, tag)) return 0;
+  const byText = textScore(node, census);
+  const byGeometry = geometryScore(node, census, scale);
+  if (!byText && !byGeometry) return 0;
+  // Either signal alone can carry a match; together they are decisive.
+  return byText * 2 + byGeometry;
 }
 
 // Paper does not always report childCount, so recurse on every node and let an empty
@@ -110,6 +135,9 @@ export async function applySemanticsToPaper({ call, doc, artboard = "home-deskto
   const board = (info.artboards || []).find((item) => item.name === artboard)
     || (info.artboards || []).find((item) => String(item.name || "").includes(artboard));
   if (!board?.id) throw new Error(`No ${artboard} artboard exists in Paper`);
+  const boardX = Number(board.worldX || 0);
+  const boardY = Number(board.worldY || 0);
+  const scale = Number(board.width || 1600) / Number(doc.width || board.width || 1600);
   const children = childrenOf(payload(await call("get_children", { nodeId: board.id })));
   const sections = children.filter((node) => /^\d{2}\s*·/.test(node.name || ""));
   const scanned = (doc.sections || []).reduce((count, section) => count + (section.nodes || []).length, 0);
@@ -119,7 +147,11 @@ export async function applySemanticsToPaper({ call, doc, artboard = "home-deskto
   const tree = [];
   for (const frame of sections) {
     const nodes = await walkPaperTree(call, frame.id);
-    for (const node of nodes) node.sectionName = frame.name;
+    for (const node of nodes) {
+      node.sectionName = frame.name;
+      node.pageX = Number(node.worldX) - boardX;
+      node.pageY = Number(node.worldY) - boardY;
+    }
     tree.push(...nodes);
   }
   await hydratePaperTexts(call, tree);
@@ -131,14 +163,14 @@ export async function applySemanticsToPaper({ call, doc, artboard = "home-deskto
   const used = new Set();
   const updates = [];
   const unmatched = [];
-  for (const floor of [4, 1]) {
+  for (const floor of [14, 8, 3]) {
     for (const semantic of census) {
       if (semantic.claimed) continue;
       let best = null;
       let bestScore = 0;
       for (const node of tree) {
         if (used.has(node.id)) continue;
-        const score = scorePaperNode(node, semantic);
+        const score = scorePaperNode(node, semantic, scale);
         if (score > bestScore) { bestScore = score; best = node; }
       }
       if (!best || bestScore < floor) continue;
@@ -170,10 +202,11 @@ export async function applySemanticsToPaper({ call, doc, artboard = "home-deskto
       artboard,
       paperSections: sections.map((node) => node.name),
       treeSize: tree.length,
-      unmatched: unmatched.slice(0, 60),
+      scale,
+      unmatched: unmatched.slice(0, 80),
       paperNodes: tree.slice(0, 300).map((node) => ({
         name: node.name, component: node.component, section: node.sectionName,
-        depth: node.depth, textContent: node.textContent,
+        depth: node.depth, textContent: node.textContent, pageX: node.pageX, pageY: node.pageY,
       })),
     },
   };

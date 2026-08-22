@@ -663,22 +663,27 @@ async function runAuto() {
 
 // One row per tag so the census reads as a report, not a single truncated label.
 function tagReport(capture, receipt) {
-  const found = new Map();
-  for (const node of capture.semanticNodes || []) {
-    const tag = String(node.tag || "").toLowerCase();
-    if (!tag) continue;
-    found.set(tag, (found.get(tag) || 0) + 1);
-  }
   const tagged = new Map();
   for (const update of receipt.updates || []) {
     const tag = String(update.name || "").split("·")[0].trim().toLowerCase();
-    if (!found.has(tag)) continue;
+    if (!tag) continue;
     tagged.set(tag, (tagged.get(tag) || 0) + 1);
   }
-  const total = [...found.values()].reduce((sum, count) => sum + count, 0);
+  const found = new Map();
+  // Layer-id tagging works off the pipeline's own map, so the live census is not the tally.
+  if (receipt.strategy === "layer-id") {
+    for (const [tag, count] of tagged) found.set(tag, count);
+  } else {
+    for (const node of capture.semanticNodes || []) {
+      const tag = String(node.tag || "").toLowerCase();
+      if (!tag) continue;
+      found.set(tag, (found.get(tag) || 0) + 1);
+    }
+  }
+  const total = receipt.considered || [...found.values()].reduce((sum, count) => sum + count, 0);
   const rows = [{
     id: capture.id,
-    label: "Semantic census",
+    label: receipt.strategy === "layer-id" ? "Layer-id tagging" : "Semantic census",
     stage: "tags",
     kind: "tags-scan",
     status: "success",

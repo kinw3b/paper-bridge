@@ -155,6 +155,60 @@ async function hydratePaperTexts(call, nodes) {
   }
 }
 
+const SEMANTIC_TAGS = new Set([
+  "h1", "h2", "h3", "h4", "h5", "h6", "p", "ul", "ol", "li", "img", "a", "button", "form",
+]);
+
+function imageLabel(entry) {
+  if (entry.alt) return entry.alt;
+  const src = String(entry.src || "");
+  const file = src.split("/").pop()?.split("?")[0] || "";
+  return file || "img";
+}
+
+function layerName(entry) {
+  const tag = String(entry.tag || "div").toLowerCase();
+  const raw = tag === "img" ? imageLabel(entry) : (entry.text || entry.alt || tag);
+  const label = String(raw).replace(/\s+/g, " ").trim().slice(0, 48) || tag;
+  return `${tag} · ${label}`;
+}
+
+// The pipeline stamps every serialized element with a pc- id and records both sides of the
+// mapping, so tagging is a join on that key — no text, geometry, or guesswork involved.
+export async function applySemanticsByLayerId({ call, layerIds, paperIds } = {}) {
+  const dom = layerIds?.ids || {};
+  const paper = paperIds?.ids || {};
+  const updates = [];
+  const skipped = [];
+  let considered = 0;
+  for (const [pcId, entry] of Object.entries(dom)) {
+    const tag = String(entry?.tag || "").toLowerCase();
+    if (!SEMANTIC_TAGS.has(tag)) continue;
+    considered += 1;
+    const nodeId = paper[pcId];
+    if (!nodeId) { skipped.push(pcId); continue; }
+    updates.push({ nodeId, name: layerName(entry) });
+  }
+  for (let index = 0; index < updates.length; index += 200) {
+    await call("rename_nodes", { updates: updates.slice(index, index + 200) });
+  }
+  if (updates.length) {
+    try { await call("finish_working_on_nodes", {}); } catch { /* optional Paper cleanup */ }
+  }
+  return {
+    artboard: paperIds?.artboardName || "home-desktop",
+    strategy: "layer-id",
+    scanned: Object.keys(dom).length,
+    sourceSections: (layerIds?.sections || []).length,
+    missingSections: [],
+    considered,
+    matched: updates.length,
+    renamed: updates.length,
+    updates,
+    debug: { strategy: "layer-id", considered, missingPaperIds: skipped.slice(0, 40), skipped: skipped.length },
+  };
+}
+
 export async function applySemanticsToPaper({ call, doc, artboard = "home-desktop" } = {}) {
   const info = payload(await call("get_basic_info", {}));
   const board = (info.artboards || []).find((item) => item.name === artboard)

@@ -3,7 +3,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { applySemanticsToPaper } from "./semantics.mjs";
+import { applySemanticsToPaper, applySemanticsByLayerId } from "./semantics.mjs";
 
 const HOST_VERSION = "1.2.23";
 const BOARD_NAMES = ["Navigation", "Hover States", "Components"];
@@ -424,7 +424,13 @@ async function applySemanticTake(take) {
   if (!take?.id || take.mode !== "tags") throw new Error("Semantic scan payload is invalid");
   persistTakeArtifacts(take);
   const doc = writeSemantics(take);
-  const result = await applySemanticsToPaper({ call: paperCall, doc, artboard: "home-desktop" });
+  // The pipeline's pc- id maps make tagging exact; fall back to matching only when absent.
+  const captureDir = path.join(config.projectRoot, "capture", "home-desktop");
+  const layerIds = readJsonFile(path.join(captureDir, "layer-ids.json"));
+  const paperIds = readJsonFile(path.join(captureDir, "paper-layer-ids.json"));
+  const result = layerIds?.ids && paperIds?.ids
+    ? await applySemanticsByLayerId({ call: paperCall, layerIds, paperIds })
+    : await applySemanticsToPaper({ call: paperCall, doc, artboard: "home-desktop" });
   try {
     writeJson(path.join(config.projectRoot, "qa", "paper-semantics-debug.json"), result.debug);
   } catch { /* diagnostics are best effort */ }

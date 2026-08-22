@@ -31,7 +31,7 @@ const STAGES = [
     id: "tags",
     short: "TAGS",
     title: "Tags",
-    copy: "Semantic outlines and tag pills appear across the live page. Click Scan to collect the full-page semantic census; Auto uses the same explicit Scan action. Done closes the session.",
+    copy: "The page is locked to the 1600 desktop lander so tags cannot drift with window size or zoom. Outlines ride the live elements. Scan writes the pc-id census to Paper; Auto uses the same Scan action. Done keeps this panel open so you can Continue with the agent.",
   },
 ];
 
@@ -39,8 +39,9 @@ const ui = Object.fromEntries([
   "setup", "workspace", "complete", "connection", "paperFileId", "projectRoot", "paperEndpoint",
   "setupError", "startButton", "stageRail", "stepKicker", "stageTitle", "stageCopy", "autoMode",
   "navKindPicker", "recordButton", "recordTitle", "recordHelp", "activity", "takes", "captureError",
-  "backButton", "continueButton", "doneButton", "navProgress", "navProgressLabel", "navProgressCount",
+  "backButton", "continueButton", "doneButton",   "navProgress", "navProgressLabel", "navProgressCount",
   "navProgressBar", "navProgressFill", "navProgressHelp",
+  "tagProgress", "tagProgressLabel", "tagProgressCount", "tagProgressHelp",
 ].map((id) => [id, document.getElementById(id)]));
 
 let port = null;
@@ -51,15 +52,6 @@ let sourceUrl = "";
 let stageIndex = 0;
 let navKind = "navbar";
 let pairDraft = null;
-
-// Stages that record a component twice; the badge counts 01 → 02 as you go.
-function isPairStage(item = stage()) {
-  return (item.id === "nav" && navKind === "dropdown") || item.id === "multi";
-}
-
-function pairStep() {
-  return isPairStage() ? (pairDraft ? 2 : 1) : 0;
-}
 let recording = false;
 let pending = 0;
 const requests = new Map();
@@ -68,6 +60,7 @@ const retryPayloads = new Map();
 const navCapturePhases = new Map([
   ["desktop", "waiting"], ["tablet", "waiting"], ["mobile", "waiting"],
 ]);
+let desktopViewport = null;
 
 function setConnection(online, text = online ? "Connected" : "Offline") {
   ui.connection.classList.toggle("online", online);
@@ -261,9 +254,8 @@ function renderStages() {
     button.className = `stage-dot${index === stageIndex ? " active" : ""}${index < stageIndex ? " complete" : ""}`;
     button.textContent = index < stageIndex ? "✓" : item.short;
     button.title = item.title;
-    // Any stage is reachable: jumping straight to Tags is a normal way to test one step.
-    button.disabled = index === stageIndex || pending > 0;
-    if (index !== stageIndex) button.addEventListener("click", () => changeStage(index));
+    button.disabled = index > stageIndex;
+    if (index < stageIndex) button.addEventListener("click", () => changeStage(index));
     ui.stageRail.append(button);
   });
 }
@@ -277,16 +269,13 @@ function renderTakes() {
   for (const take of visible) {
     const row = document.createElement("div");
     row.className = `take ${take.status}`;
-    const icon = take.status === "success" ? "✓" : take.status === "failed" ? "!" : take.status === "idle" ? "–" : "…";
-    row.innerHTML = `<span class="take-icon">${icon}</span><strong></strong><em></em><p></p>`;
-    row.querySelector("strong").textContent = take.sectionId
-      ? `${take.sectionId} · ${take.label}`
-      : take.label;
-    row.querySelector("em").textContent = take.meta || (take.states > 1 ? `${take.states} states` : "");
-    row.querySelector("p").textContent = take.note || (take.status === "success"
-      ? "Added to Paper"
-      : take.status === "failed" ? take.error : "Sending…");
-    if (take.status === "failed" && retryPayloads.has(take.id)) {
+    const icon = take.status === "success" ? "✓" : take.status === "failed" ? "!" : "…";
+    row.innerHTML = `<span class="take-icon">${icon}</span><div><strong></strong><p></p></div>`;
+    row.querySelector("strong").textContent = take.label;
+    row.querySelector("p").textContent = take.status === "success"
+      ? `✓ added to Paper · ${take.board}`
+      : take.status === "failed" ? take.error : "Sending to Paper…";
+    if (take.status === "failed") {
       const retry = document.createElement("button");
       retry.className = "retry";
       retry.textContent = "Retry";
@@ -309,29 +298,25 @@ function renderStage() {
   ui.doneButton.hidden = item.id !== "tags";
   const navbarConfirmed = navbarReceiptCount();
   const navbarComplete = hasAllNavbarReceipts();
-  // Breakpoint receipts are reported, not enforced: Paper can lag and the user still owns the call.
-  ui.continueButton.disabled = pending > 0;
+  ui.continueButton.disabled = pending > 0 || (item.id === "nav" && !navbarComplete);
   ui.continueButton.classList.toggle("is-waiting", item.id === "nav" && !navbarComplete && pending > 0);
   ui.continueButton.textContent = item.id !== "nav" || navbarComplete
     ? "Continue"
-    : pending > 0 ? `Confirming · ${navbarConfirmed}/3` : `Continue · ${navbarConfirmed}/3`;
+    : pending > 0 ? `Confirming · ${navbarConfirmed}/3` : `Waiting for Paper · ${navbarConfirmed}/3`;
   ui.doneButton.disabled = pending > 0;
   ui.recordButton.disabled = pending > 0;
   ui.recordTitle.textContent = item.id === "tags"
     ? ui.autoMode.checked ? "Auto semantic scan ready" : "Semantic scan ready"
-    : isPairStage(item) ? `State ${pairStep()} of 2`
+    : pairDraft ? "State 1 is ready"
       : ui.autoMode.checked ? "Auto mode ready" : "Ready to record";
   ui.recordHelp.textContent = item.id === "tags"
-    ? "Scan semantic elements across the full page."
-    : pairDraft ? "Change the component on the page, then record state 2."
-      : isPairStage(item) ? "Record the component as it sits now."
-        : ui.autoMode.checked ? "Scan the page and choose safe matches." : "Choose an element. Use ↑/↓ to select its parent.";
-  const recordLabel = item.id === "tags"
-    ? "Scan"
-    : isPairStage(item) ? `Record state ${pairStep()}`
-      : ui.autoMode.checked ? "Auto" : "Record";
+    ? "Scan the 1600 page. Layer-ids name the matching Paper layers."
+    : pairDraft ? "Open or change it, then capture state 2."
+      : ui.autoMode.checked ? "Scan the page and choose safe matches." : "Choose an element. Use ↑/↓ to select its parent.";
+  const recordLabel = item.id === "tags" ? "Scan" : ui.autoMode.checked ? "Auto" : "Record";
   ui.recordButton.innerHTML = `<span></span>${recordLabel}`;
   renderNavbarProgress();
+  renderTagProgress();
   renderTakes();
   if (!activeTab?.id) return;
   pageMessage({
@@ -339,7 +324,6 @@ function renderStage() {
     recording: false,
     mode: item.id,
     captureKind: currentKind(),
-    pairStep: pairStep(),
   }).catch(() => {});
   if (item.id === "tags") {
     pageMessage({ type: "HC_SHOW_TAG_OUTLINES" }).catch(() => {});
@@ -393,6 +377,37 @@ function renderNavbarProgress() {
   });
 }
 
+function renderTagProgress() {
+  const visible = stage().id === "tags";
+  ui.tagProgress.hidden = !visible;
+  if (!visible) return;
+  const locked = Boolean(desktopViewport?.ok && Math.abs(Number(desktopViewport.width) - 1600) <= 48);
+  const scan = [...takes].reverse().find((take) => take.kind === "tags-scan");
+  const tagged = Number(scan?.semanticReceipt?.layerIds?.tagged || scan?.layerIds?.tagged || 0);
+  const matched = Number(scan?.semanticReceipt?.layerIds?.matched || scan?.semanticReceipt?.matched || 0);
+  ui.tagProgress.classList.toggle("locked", locked);
+  ui.tagProgress.classList.toggle("failed", Boolean(desktopViewport) && !locked);
+  ui.tagProgressLabel.textContent = locked
+    ? "Desktop layout locked at 1600"
+    : desktopViewport ? `Layout is ${desktopViewport.width}px — Tags need 1600`
+      : "Locking the page to 1600…";
+  ui.tagProgressCount.textContent = scan ? `${matched} matched` : "0 matched";
+  ui.tagProgressHelp.textContent = scan
+    ? `${tagged} layer-ids tagged · ${matched} Paper layers renamed. Outlines stay on the elements.`
+    : "Zoom is 100%. Scan names home-desktop from the 1.2 pc-id tree, not from leftover box positions.";
+}
+
+async function lockDesktopViewport() {
+  const tab = await resolveSourceTab();
+  await ensureInjected(tab.id);
+  const result = await chrome.runtime.sendMessage({ type: "HC_LOCK_DESKTOP_VIEWPORT", tabId: tab.id });
+  desktopViewport = result;
+  if (!result?.ok) {
+    throw new Error(result?.error || "Could not lock the page to the 1600 desktop lander");
+  }
+  return result;
+}
+
 function hasAllNavbarReceipts() {
   const confirmed = new Set(takes
     .filter((take) => take.kind === "navbar" && take.status === "success")
@@ -407,16 +422,11 @@ function setActivity(text, sending = false) {
 
 function setRecording(value) {
   recording = value;
-  const card = document.querySelector(".record-card");
-  card.classList.toggle("recording", recording);
-  card.dataset.pairStep = isPairStage() ? String(pairStep()) : "";
-  if (recording) {
-    ui.recordTitle.textContent = isPairStage() ? `Recording state ${pairStep()}` : "Recording is on";
-    ui.recordHelp.textContent = "Click the outlined element.";
-    ui.recordButton.textContent = "Cancel";
-    return;
-  }
-  renderStage();
+  document.querySelector(".record-card").classList.toggle("recording", recording);
+  ui.recordTitle.textContent = recording ? "Recording is on" : pairDraft ? "State 1 is ready" : "Ready to record";
+  ui.recordHelp.textContent = recording ? "Click the outlined element." : pairDraft
+    ? "Open or change it, then capture state 2." : "Choose an element. Use ↑/↓ to select its parent.";
+  ui.recordButton.textContent = recording ? "Cancel" : ui.autoMode.checked ? "Auto" : "Record";
 }
 
 async function startCapture() {
@@ -435,6 +445,11 @@ async function startCapture() {
       config: { paperFileId, projectRoot, paperEndpoint, sourceUrl: cleanSourceUrl(activeTab.url) },
     });
     await ensureInjected(activeTab.id);
+    try {
+      await lockDesktopViewport();
+    } catch (error) {
+      ui.captureError.textContent = `${error.message}. Tags may miss Paper layers if this window stays off 1600.`;
+    }
     if (started?.paperSections?.length) {
       await pageMessage({ type: "HC_SET_PAPER_SECTIONS", sections: started.paperSections });
     }
@@ -459,8 +474,6 @@ async function commitTake(payload) {
     label: payload.label || currentKind(),
     stage: stage().id,
     kind: payload.kind || currentKind(),
-    sectionId: payload.sectionId,
-    states: payload.hoverHtml && payload.defaultHtml ? 2 : 1,
     breakpoint: payload.breakpoint,
     status: "sending",
   };
@@ -517,7 +530,7 @@ async function handleCapture(capture) {
   if ((item.id === "nav" && navKind === "dropdown") || item.id === "multi") {
     if (!pairDraft) {
       pairDraft = capture;
-      setActivity("State 1 held locally. Change it on the page, then record state 2.");
+      setActivity("State 1 captured locally. Change/open it on the page, then record state 2.");
       renderStage();
       return;
     }
@@ -529,7 +542,6 @@ async function handleCapture(capture) {
       mode: item.id,
       kind: item.id === "nav" ? "dropdown" : "multi-state",
       label: first.label,
-      sectionId: first.sectionId,
       defaultHtml: first.html,
       hoverHtml: capture.html,
       html: undefined,
@@ -596,13 +608,13 @@ async function toggleRecord() {
     if (recording) {
       setRecording(false);
       await pageMessage({
-        type: "HC_SET_RECORDING", recording: false, mode: stage().id, captureKind: currentKind(), pairStep: pairStep(),
+        type: "HC_SET_RECORDING", recording: false, mode: stage().id, captureKind: currentKind(),
       });
       return;
     }
     setRecording(true);
     await pageMessage({
-      type: "HC_SET_RECORDING", recording: true, mode: stage().id, captureKind: currentKind(), pairStep: pairStep(),
+      type: "HC_SET_RECORDING", recording: true, mode: stage().id, captureKind: currentKind(),
     });
   } catch (error) {
     setRecording(false);
@@ -626,22 +638,34 @@ async function runAuto() {
       return;
     }
     if (stage().id === "tags") {
-      const tab = await resolveSourceTab();
-      await ensureInjected(tab.id);
-      const result = await chrome.runtime.sendMessage({ type: "HC_SCAN_TAGS", tabId: tab.id, width: 1600 });
+      try {
+        await lockDesktopViewport();
+      } catch (error) {
+        throw new Error(`${error.message}. Resize will drift tags; lock the tab to 1600 and Scan again.`);
+      }
+      setActivity("Scanning the 1600 desktop census…", true);
+      const result = await pageMessage({ type: "HC_AUTO_TAGS" });
       if (!result?.ok) throw new Error(result?.error || "Tag scan failed");
       pending += 1;
       renderStage();
       try {
         const applied = await nativeRequest("APPLY_SEMANTICS", { take: result.capture });
-        // A rescan replaces the previous census rather than stacking a second one.
-        for (let index = takes.length - 1; index >= 0; index -= 1) {
-          if (takes[index].stage === "tags") takes.splice(index, 1);
-        }
-        takes.push(...tagReport(result.capture, applied.receipt));
+        takes.push({
+          id: result.capture.id,
+          label: `Semantics · ${applied.receipt.renamed} layers tagged`,
+          stage: "tags",
+          kind: "tags-scan",
+          status: "success",
+          board: "home-desktop",
+          semanticReceipt: applied.receipt,
+          layerIds: applied.receipt.layerIds || result.capture.layerIds,
+        });
         const missing = applied.receipt.missingSections?.length
           ? ` · missing Paper sections ${applied.receipt.missingSections.join(", ")}` : "";
-        setActivity(`✓ ${applied.receipt.scanned} candidates across ${applied.receipt.sourceSections} sections · ${applied.receipt.matched} matched · ${applied.receipt.renamed} renamed${missing}`);
+        const layer = applied.receipt.layerIds
+          ? ` · ${applied.receipt.layerIds.tagged} layer-ids · ${applied.receipt.layerIds.matched} pc-id hits`
+          : "";
+        setActivity(`✓ ${applied.receipt.scanned} candidates across ${applied.receipt.sourceSections} sections · ${applied.receipt.matched} matched · ${applied.receipt.renamed} renamed${layer}${missing}`);
       } finally {
         pending -= 1;
         renderStage();
@@ -664,65 +688,6 @@ async function runAuto() {
   }
 }
 
-// One row per tag so the census reads as a report, not a single truncated label.
-function tagReport(capture, receipt) {
-  const tagged = new Map();
-  for (const update of receipt.updates || []) {
-    const tag = String(update.name || "").split("·")[0].trim().toLowerCase();
-    if (!tag) continue;
-    tagged.set(tag, (tagged.get(tag) || 0) + 1);
-  }
-  const found = new Map();
-  // Layer-id tagging works off the pipeline's own map, so the live census is not the tally.
-  if (receipt.strategy === "layer-id") {
-    for (const [tag, count] of tagged) found.set(tag, count);
-  } else {
-    for (const node of capture.semanticNodes || []) {
-      const tag = String(node.tag || "").toLowerCase();
-      if (!tag) continue;
-      found.set(tag, (found.get(tag) || 0) + 1);
-    }
-  }
-  const total = receipt.considered || [...found.values()].reduce((sum, count) => sum + count, 0);
-  const rows = [{
-    id: capture.id,
-    label: receipt.strategy === "layer-id" ? "Layer-id tagging" : "Semantic census",
-    stage: "tags",
-    kind: "tags-scan",
-    status: "success",
-    board: "home-desktop",
-    meta: `${total} tags`,
-    note: `${receipt.matched} matched in Paper`,
-    semanticReceipt: receipt,
-  }];
-  // Paper sections we scanned for but never found are the usual reason a tag never lands.
-  if (receipt.missingSections?.length) {
-    rows.push({
-      id: `${capture.id}-missing`,
-      label: "No Paper section",
-      stage: "tags",
-      kind: "tag-tally",
-      status: "failed",
-      meta: `${receipt.missingSections.length} skipped`,
-      note: receipt.missingSections.join(", "),
-    });
-  }
-  const ranked = [...found.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
-  for (const [tag, count] of ranked) {
-    const hits = tagged.get(tag) || 0;
-    rows.push({
-      id: `${capture.id}-${tag}`,
-      label: `<${tag}>`,
-      stage: "tags",
-      kind: "tag-tally",
-      status: hits ? "success" : "idle",
-      meta: `${count} found`,
-      note: hits ? `${hits} tagged` : "no Paper match",
-    });
-  }
-  return rows;
-}
-
 function changeStage(index) {
   if (pending > 0 || index < 0 || index >= STAGES.length) return;
   pairDraft = null;
@@ -731,6 +696,12 @@ function changeStage(index) {
   setActivity("");
   ui.captureError.textContent = "";
   renderStage();
+  if (STAGES[index]?.id === "tags") {
+    lockDesktopViewport().then(() => renderTagProgress()).catch((error) => {
+      ui.captureError.textContent = error.message;
+      renderTagProgress();
+    });
+  }
 }
 
 async function finishSession() {
@@ -738,6 +709,7 @@ async function finishSession() {
   ui.doneButton.disabled = true;
   setActivity("Closing capture session…", true);
   try {
+    await chrome.runtime.sendMessage({ type: "HC_RELEASE_VIEWPORT" }).catch(() => {});
     await nativeRequest("COMPLETE_SESSION", {
       summary: {
         sourceUrl: activeTab.url,
@@ -749,9 +721,6 @@ async function finishSession() {
     ui.workspace.hidden = true;
     ui.complete.hidden = false;
     setConnection(true, "Complete");
-    setTimeout(() => {
-      chrome.runtime.sendMessage({ type: "HC_CLOSE_PANEL", tabId: activeTab.id }).catch(() => {});
-    }, 1100);
   } catch (error) {
     ui.captureError.textContent = error.message;
     ui.doneButton.disabled = false;

@@ -23,94 +23,50 @@ function semanticName(node) {
   return `${tag} · ${label}`;
 }
 
-function isTextLayer(node) {
-  return /text|richtext/i.test(node.component || "") || Boolean(node.textContent);
+function paperIdMap(paperLayerIds) {
+  if (!paperLayerIds) return {};
+  if (paperLayerIds.ids && typeof paperLayerIds.ids === "object") return paperLayerIds.ids;
+  return paperLayerIds;
 }
 
-// Paper renders images as Rectangles with an image fill, so shape layers count too.
-function isImageLayer(node) {
-  return /image|img|svg|picture|rectangle/i.test(`${node.component || ""} ${node.name || ""}`);
-}
-
-function typeFits(node, tag) {
-  if (tag === "img") return isImageLayer(node) && !isTextLayer(node);
-  if (/^h[1-6]$/.test(tag) || ["p", "span", "li"].includes(tag)) return isTextLayer(node);
-  return true;
-}
-
-function textScore(node, census) {
+export function matchPaperNode(nodes, census) {
+  const pcId = String(census.pcId || "").trim();
+  if (pcId) {
+    const exact = (nodes || []).find((node) => node.name === pcId || node.pcId === pcId);
+    if (exact) return exact;
+  }
   const want = norm(census.text || census.alt);
-  const text = norm(node.textContent);
-  if (!want || !text) return 0;
-  if (text === want) return 6;
-  if (text.startsWith(want) || want.startsWith(text)) return 4;
-  if (text.includes(want) || want.includes(text)) return 2;
-  return 0;
-}
-
-// Paper mirrors the page layout, so page coordinates disambiguate what text cannot:
-// duplicate copy (nav vs hero "Get Started Now") and images, which carry no text at all.
-function median(values) {
-  if (!values.length) return 0;
-  const sorted = [...values].sort((a, b) => a - b);
-  return sorted[Math.floor(sorted.length / 2)];
-}
-
-// Paper's rebuild drifts further from the live page the lower you go, so one global
-// offset is useless. Calibrate each section from its own confident matches.
-function offsetsBySection(anchors) {
-  if (anchors.length < 6) return null;
-  const groups = new Map();
-  for (const anchor of anchors) {
-    if (!groups.has(anchor.section)) groups.set(anchor.section, []);
-    groups.get(anchor.section).push(anchor);
-  }
-  const table = new Map();
-  for (const [section, list] of groups) {
-    if (list.length < 3) continue;
-    table.set(section, { dx: median(list.map((a) => a.dx)), dy: median(list.map((a) => a.dy)) });
-  }
-  if (!table.size) return null;
-  table.set("*", { dx: median(anchors.map((a) => a.dx)), dy: median(anchors.map((a) => a.dy)) });
-  return table;
-}
-
-function geometryScore(node, census, scale, offset = { dx: 0, dy: 0 }) {
-  if (!scale) return 0;
-  if (!Number.isFinite(node.pageX) || !Number.isFinite(census.x)) return 0;
-  const dx = Math.abs(node.pageX - (census.x * scale + offset.dx));
-  const dy = Math.abs(node.pageY - (census.y * scale + offset.dy));
-  const distance = dx + dy;
-  if (distance > 64) return 0;
-  if (distance <= 6) return 6;
-  if (distance <= 20) return 4;
-  return 2;
-}
-
-function scorePaperNode(node, census, scale) {
   const tag = String(census.tag || "").toLowerCase();
-  if (/^\d{2}\s*·/.test(node.name || "")) return 0;
-  if (!typeFits(node, tag)) return 0;
-  const byText = textScore(node, census);
-  const byGeometry = geometryScore(node, census, scale);
-  if (!byText && !byGeometry) return 0;
-  // Either signal alone can carry a match; together they are decisive.
-  return byText * 2 + byGeometry;
+  const scored = [];
+  for (const node of nodes) {
+    if (/^\d{2}\s*·/.test(node.name || "")) continue;
+    if (new RegExp(`^${tag}\\s*·`, "i").test(node.name || "")
+      && (!want || norm(node.name).includes(want.slice(0, 24)))) return node;
+    const text = norm(node.textContent || node.name || "");
+    const image = /image|img/i.test(node.component || "") || /image|img/i.test(node.name || "");
+    if (tag === "img") {
+      if (!image && !/photo|shot|media/i.test(node.name || "")) continue;
+      if (!want) scored.push({ node, score: Number(node.childCount || 0) === 0 ? 2 : 1 });
+      continue;
+    }
+    if (!text || !want) continue;
+    if (text === want) scored.push({ node, score: Number(node.childCount || 0) === 0 ? 4 : 3 });
+    else if (text.includes(want) || want.includes(text)) scored.push({ node, score: 1 });
+  }
+  scored.sort((a, b) => b.score - a.score);
+  return scored[0]?.score >= 1 ? scored[0].node : null;
 }
 
-// Paper does not always report childCount, so recurse on every node and let an empty
-// get_children end the branch; gating on childCount stopped the walk at depth 1.
-async function walkPaperTree(call, rootId, depth = 0, budget = { left: 4000 }) {
-  if (!rootId || depth > 16 || budget.left <= 0) return [];
+async function walkPaperTree(call, rootId, depth = 0) {
+  if (!rootId || depth > 10) return [];
   const list = childrenOf(payload(await call("get_children", { nodeId: rootId })));
   const out = [];
   for (const node of list) {
-    if (budget.left <= 0) break;
-    budget.left -= 1;
     node.parentId = rootId;
-    node.depth = depth;
     out.push(node);
-    out.push(...await walkPaperTree(call, node.id, depth + 1, budget));
+    if (Number(node.childCount || node.children?.length || 0) > 0) {
+      out.push(...await walkPaperTree(call, node.id, depth + 1));
+    }
   }
   return out;
 }
@@ -155,153 +111,56 @@ async function hydratePaperTexts(call, nodes) {
   }
 }
 
-const SEMANTIC_TAGS = new Set([
-  "h1", "h2", "h3", "h4", "h5", "h6", "p", "ul", "ol", "li", "img", "a", "button", "form",
-]);
-
-function imageLabel(entry) {
-  if (entry.alt) return entry.alt;
-  const src = String(entry.src || "");
-  const file = src.split("/").pop()?.split("?")[0] || "";
-  return file || "img";
-}
-
-function layerName(entry) {
-  const tag = String(entry.tag || "div").toLowerCase();
-  const raw = tag === "img" ? imageLabel(entry) : (entry.text || entry.alt || tag);
-  const label = String(raw).replace(/\s+/g, " ").trim().slice(0, 48) || tag;
-  return `${tag} · ${label}`;
-}
-
-// The pipeline stamps every serialized element with a pc- id and records both sides of the
-// mapping, so tagging is a join on that key — no text, geometry, or guesswork involved.
-export async function applySemanticsByLayerId({ call, layerIds, paperIds } = {}) {
-  const dom = layerIds?.ids || {};
-  const paper = paperIds?.ids || {};
-  const updates = [];
-  const skipped = [];
-  let considered = 0;
-  for (const [pcId, entry] of Object.entries(dom)) {
-    const tag = String(entry?.tag || "").toLowerCase();
-    if (!SEMANTIC_TAGS.has(tag)) continue;
-    considered += 1;
-    const nodeId = paper[pcId];
-    if (!nodeId) { skipped.push(pcId); continue; }
-    updates.push({ nodeId, name: layerName(entry) });
-  }
-  for (let index = 0; index < updates.length; index += 200) {
-    await call("rename_nodes", { updates: updates.slice(index, index + 200) });
-  }
-  if (updates.length) {
-    try { await call("finish_working_on_nodes", {}); } catch { /* optional Paper cleanup */ }
-  }
-  return {
-    artboard: paperIds?.artboardName || "home-desktop",
-    strategy: "layer-id",
-    scanned: Object.keys(dom).length,
-    sourceSections: (layerIds?.sections || []).length,
-    missingSections: [],
-    considered,
-    matched: updates.length,
-    renamed: updates.length,
-    updates,
-    debug: { strategy: "layer-id", considered, missingPaperIds: skipped.slice(0, 40), skipped: skipped.length },
-  };
-}
-
-export async function applySemanticsToPaper({ call, doc, artboard = "home-desktop" } = {}) {
+export async function applySemanticsToPaper({ call, doc, artboard = "home-desktop", paperLayerIds } = {}) {
   const info = payload(await call("get_basic_info", {}));
   const board = (info.artboards || []).find((item) => item.name === artboard)
     || (info.artboards || []).find((item) => String(item.name || "").includes(artboard));
   if (!board?.id) throw new Error(`No ${artboard} artboard exists in Paper`);
-  const boardX = Number(board.worldX || 0);
-  const boardY = Number(board.worldY || 0);
-  const boardWidth = Number(board.width || 1600);
-  const docWidth = Number(doc.width || boardWidth);
-  // Responsive layouts do not reflow linearly, so page coordinates are only trustworthy
-  // when the census was captured at the artboard's own width.
-  const scale = Math.abs(boardWidth - docWidth) / boardWidth <= 0.02 ? boardWidth / docWidth : 0;
   const children = childrenOf(payload(await call("get_children", { nodeId: board.id })));
   const sections = children.filter((node) => /^\d{2}\s*·/.test(node.name || ""));
-  const scanned = (doc.sections || []).reduce((count, section) => count + (section.nodes || []).length, 0);
-
-  // Live-DOM band numbers never line up with the pipeline's Paper sections, so search the
-  // whole artboard by content instead of trusting the section id as an index.
-  const tree = [];
-  for (const frame of sections) {
-    const nodes = await walkPaperTree(call, frame.id);
-    for (const node of nodes) {
-      node.sectionName = frame.name;
-      node.pageX = Number(node.worldX) - boardX;
-      node.pageY = Number(node.worldY) - boardY;
-    }
-    tree.push(...nodes);
-  }
-  await hydratePaperTexts(call, tree);
-
-  const census = (doc.sections || []).flatMap((section) =>
-    (section.nodes || []).map((node) => ({ ...node, sourceSection: section.id })));
-
-  // Two passes so a loose partial match cannot consume a layer some exact match needs.
-  const used = new Set();
   const updates = [];
-  const unmatched = [];
-  const anchors = [];
-  for (const floor of [14, 8, 3]) {
-    for (const semantic of census) {
-      if (semantic.claimed) continue;
-      let best = null;
-      let bestScore = 0;
-      for (const node of tree) {
-        if (used.has(node.id)) continue;
-        const score = scorePaperNode(node, semantic, scale);
-        if (score > bestScore) { bestScore = score; best = node; }
+  const used = new Set();
+  const scanned = (doc.sections || []).reduce((count, section) => count + (section.nodes || []).length, 0);
+  const missingSections = [];
+  const paperByPc = paperIdMap(paperLayerIds);
+  let matchedByLayerId = 0;
+  const queueRename = (nodeId, semantic) => {
+    if (!nodeId || used.has(nodeId)) return false;
+    used.add(nodeId);
+    const name = semantic.paperName || semanticName(semantic);
+    updates.push({ nodeId, name });
+    return true;
+  };
+  for (const section of doc.sections || []) {
+    const frame = sections.find((node) => String(node.name || "").startsWith(`${section.id} ·`));
+    const leftovers = [];
+    for (const semantic of section.nodes || []) {
+      const mapped = semantic.pcId ? paperByPc[semantic.pcId] : null;
+      const nodeId = typeof mapped === "string" ? mapped : mapped?.id;
+      if (nodeId && queueRename(nodeId, semantic)) {
+        matchedByLayerId += 1;
+        continue;
       }
-      if (!best || bestScore < floor) continue;
-      const hit = interactiveContainer(best, tree, String(semantic.tag || "").toLowerCase());
+      leftovers.push(semantic);
+    }
+    if (!leftovers.length) continue;
+    if (!frame) {
+      missingSections.push(section.id);
+      continue;
+    }
+    const tree = await walkPaperTree(call, frame.id);
+    await hydratePaperTexts(call, tree);
+    for (const semantic of leftovers) {
+      let hit = matchPaperNode(tree.filter((node) => !used.has(node.id)), semantic);
+      if (!hit) continue;
+      if (semantic.pcId && hit.name === semantic.pcId) matchedByLayerId += 1;
+      else hit = interactiveContainer(hit, tree, String(semantic.tag || "").toLowerCase());
       if (used.has(hit.id)) continue;
-      if (textScore(best, semantic) >= 6 && Number.isFinite(best.pageX) && Number.isFinite(semantic.x)) {
-        anchors.push({
-          section: best.sectionName,
-          dx: best.pageX - semantic.x * scale,
-          dy: best.pageY - semantic.y * scale,
-        });
-      }
       used.add(hit.id);
-      semantic.claimed = true;
       const name = semantic.paperName || semanticName(semantic);
       if (hit.name !== name) updates.push({ nodeId: hit.id, name });
     }
   }
-  // Paper's rebuild carries its own artboard padding, so absolute page coordinates never
-  // line up. Derive the offset from the exact-text matches, then place the rest by position.
-  const offsets = offsetsBySection(anchors);
-  if (offsets && scale) {
-    for (const semantic of census) {
-      if (semantic.claimed) continue;
-      let best = null;
-      let bestScore = 0;
-      for (const node of tree) {
-        if (used.has(node.id)) continue;
-        if (!typeFits(node, String(semantic.tag || "").toLowerCase())) continue;
-        const offset = offsets.get(node.sectionName) || offsets.get("*");
-        const score = geometryScore(node, semantic, scale, offset);
-        if (score > bestScore) { bestScore = score; best = node; }
-      }
-      if (!best || bestScore < 4) continue;
-      const hit = interactiveContainer(best, tree, String(semantic.tag || "").toLowerCase());
-      if (used.has(hit.id)) continue;
-      used.add(hit.id);
-      semantic.claimed = true;
-      const name = semantic.paperName || semanticName(semantic);
-      if (hit.name !== name) updates.push({ nodeId: hit.id, name });
-    }
-  }
-
-  for (const semantic of census) {
-    if (!semantic.claimed) unmatched.push({ tag: semantic.tag, text: String(semantic.text || "").slice(0, 60) });
-  }
-
   if (updates.length) {
     await call("rename_nodes", { updates });
     try { await call("finish_working_on_nodes", {}); } catch { /* optional Paper cleanup */ }
@@ -310,25 +169,10 @@ export async function applySemanticsToPaper({ call, doc, artboard = "home-deskto
     artboard,
     scanned,
     sourceSections: (doc.sections || []).length,
-    missingSections: [],
+    missingSections,
     matched: used.size,
+    matchedByLayerId,
     renamed: updates.length,
     updates,
-    debug: {
-      artboard,
-      paperSections: sections.map((node) => node.name),
-      treeSize: tree.length,
-      scale,
-      boardWidth,
-      docWidth,
-      geometryUsed: scale > 0,
-      anchors: anchors.length,
-      offsets: offsets ? Object.fromEntries(offsets) : null,
-      unmatched: unmatched.slice(0, 80),
-      paperNodes: tree.slice(0, 300).map((node) => ({
-        name: node.name, component: node.component, section: node.sectionName,
-        depth: node.depth, textContent: node.textContent, pageX: node.pageX, pageY: node.pageY,
-      })),
-    },
   };
 }

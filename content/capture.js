@@ -1,6 +1,12 @@
 (() => {
   if (window.__PAPER_CAPTURE_EXTENSION__) return;
-  window.__PAPER_CAPTURE_EXTENSION__ = true;
+  if (!globalThis.PaperCaptureNaming?.componentName
+    || !globalThis.PaperCaptureTargeting?.targetFor
+    || !globalThis.PaperCaptureNavBreakpoints
+    || !globalThis.PaperCaptureSections
+    || !globalThis.PaperCaptureTags) {
+    return;
+  }
 
   const state = {
     recording: false,
@@ -12,10 +18,8 @@
     selected: new Map(),
     sequence: 0,
     semanticOverlays: new Map(),
-    sectionRoots: null,
-    sectionRootsAt: 0,
     paperSections: [],
-    pairStep: 0,
+    overlayLoop: 0,
   };
 
   const root = document.createElement("x-paper-capture-root");
@@ -83,132 +87,49 @@
     return "rgb(255, 255, 255)";
   }
 
-  const SECTION_SELECTOR = [
-    "section", "[data-section]", "[data-framer-name*='section' i]",
-    "main > *", "[role='main'] > *",
-    "body > header", "body > nav", "body > footer",
-    "header[class]", "footer[class]"
-  ].join(",");
-
-  const MIN_SECTION_HEIGHT = 60;
-
-  function semanticSectionRoots() {
-    const now = Date.now();
-    if (state.sectionRoots && now - state.sectionRootsAt < 1500) return state.sectionRoots;
-    const candidates = [...document.querySelectorAll(SECTION_SELECTOR)].filter((candidate) => {
-      if (!visible(candidate)) return false;
-      if (candidate.closest("x-paper-capture-root")) return false;
-      return candidate.getBoundingClientRect().height >= MIN_SECTION_HEIGHT;
-    });
-    // Only outermost bands survive, so a card marked "section" never outranks the band holding it.
-    const roots = candidates.filter((candidate) =>
-      !candidates.some((other) => other !== candidate && other.contains(candidate)));
-    const ordered = roots.sort((a, b) => sectionTopOf(a) - sectionTopOf(b));
-    state.sectionRoots = ordered;
-    state.sectionRootsAt = now;
-    return ordered;
-  }
-
-  function isChrome(root) {
-    return globalThis.PaperCaptureSections.isCompactChrome(root, { scrollY });
-  }
-
-  function sectionBands() {
-    return globalThis.PaperCaptureSections.contentBands(semanticSectionRoots(), { scrollY });
-  }
-
-  addEventListener("resize", () => { state.sectionRoots = null; }, { passive: true });
-
   function sectionTopOf(element) {
     return element.getBoundingClientRect().top + scrollY;
   }
 
-  // Paper census wins (01 · hero). DOM fallback skips only compact nav chrome.
+  function semanticSectionRoots() {
+    const candidates = [...document.querySelectorAll("section, [data-section], [data-framer-name*='section' i]")]
+      .filter(visible);
+    const siblingGroups = new Map();
+    for (const candidate of candidates) {
+      const parent = candidate.parentElement;
+      if (!parent) continue;
+      if (!siblingGroups.has(parent)) siblingGroups.set(parent, []);
+      siblingGroups.get(parent).push(candidate);
+    }
+    const siblings = [...siblingGroups.values()]
+      .filter((group) => group.length > 1)
+      .sort((a, b) => b.length - a.length)[0];
+    const fallback = [...document.querySelectorAll("main > *, [role='main'] > *")].filter(visible);
+    const roots = siblings
+      || (fallback.length > 1 ? fallback : candidates.filter((candidate) =>
+        !candidates.some((other) => other !== candidate && other.contains(candidate))));
+    return [...roots].sort((a, b) => sectionTopOf(a) - sectionTopOf(b));
+  }
+
   function sectionOf(element) {
     const mid = sectionTopOf(element) + Math.max(0, element.getBoundingClientRect().height) / 2;
     if (state.paperSections?.length) {
       const hit = globalThis.PaperCaptureSections.matchCensus(mid, state.paperSections);
-      if (hit) {
-        const { chrome, bands } = sectionBands();
-        const root = [...chrome, ...bands].find((node) => node === element || node.contains(element))
-          || bands[Number(hit.id) - 1]
-          || document.body;
-        return { ...hit, root, label: hit.label || sectionSlug(root, Number(hit.id) - 1) };
-      }
+      if (hit) return hit;
     }
-    const { chrome, bands } = sectionBands();
+    const { chrome, bands } = globalThis.PaperCaptureSections.contentBands(semanticSectionRoots(), { scrollY });
     const header = chrome.find((root) => root === element || root.contains(element));
     if (header) return { id: "00", label: "header", root: header };
-    const assigned = globalThis.PaperCaptureSections.assignFromBands(element, bands, {
+    return globalThis.PaperCaptureSections.assignFromBands(element, bands, {
       scrollY,
       getTop: sectionTopOf,
     });
-    if (assigned.id === "00") return { ...assigned, root: chrome[0] || bands[0] };
-    const index = Math.max(0, Number(assigned.id) - 1);
-    return {
-      ...assigned,
-      label: sectionSlug(assigned.root || bands[index], index),
-      root: assigned.root || bands[index] || document.body,
-    };
   }
 
-  function sectionSlug(root, index) {
-    const heading = root.querySelector("h1,h2,h3,h4,h5,h6");
-    const named = root.getAttribute("data-framer-name") || root.getAttribute("data-section") || root.id || "";
-    const source = named || (heading ? textOf(heading) : "");
-    const slug = String(source).replace(/\s+/g, " ").trim().slice(0, 32);
-    const tag = root.tagName.toLowerCase();
-    return slug || (["header", "footer", "nav", "aside"].includes(tag) ? tag : `section-${index + 1}`);
-  }
-
-  const TYPE_TAGS = {
-    img: "Image", picture: "Image", svg: "Image", video: "Media", canvas: "Media",
-    input: "Field", textarea: "Field", select: "Field", form: "Form",
-    nav: "Nav", ul: "List", ol: "List", table: "Table", header: "Header", footer: "Footer"
-  };
-
-  // A generic type beats a text dump: layer names stay scannable and survive copy changes.
-  function elementType(element, kind) {
-    if (kind === "navbar") return "Navbar";
-    if (kind === "dropdown") return "Dropdown";
-    const tag = element.tagName.toLowerCase();
-    const role = String(element.getAttribute("role") || "").toLowerCase();
-    if (/^h[1-6]$/.test(tag)) return "Heading";
-    if (TYPE_TAGS[tag]) return TYPE_TAGS[tag];
-    if (role === "navigation") return "Nav";
-    if (role === "list") return "List";
-    if (semanticSectionRoots().includes(element)) return "Section";
-    const rect = element.getBoundingClientRect();
-    const blocks = [...element.children].filter(visible);
-    const display = blocks.find((child) => {
-      const size = parseFloat(getComputedStyle(child).fontSize);
-      return size >= 36 && /\d/.test(textOf(child));
-    });
-    if (display && blocks.length <= 3 && rect.height < 320) return "Stat";
-    if ((element.querySelector("h1,h2,h3,h4,h5,h6") || blocks.length >= 2) && rect.height >= 100) return "Card";
-    if (tag === "button" || role === "button" || tag === "a") return "Button";
-    if (["p", "span", "strong", "em", "label"].includes(tag)) return "Text";
-    return "Block";
-  }
-
-  // Peers share tag and class signature, so a card grid numbers 1..n instead of counting every div.
-  function ordinalIn(root, element) {
-    const scope = root && root !== element && root.contains(element)
-      ? root
-      : (element.parentElement || document.body);
-    const classes = element.getAttribute("class") || "";
-    const peers = [...scope.querySelectorAll(element.tagName)].filter((peer) =>
-      visible(peer) && (peer.getAttribute("class") || "") === classes);
-    const index = peers.indexOf(element);
-    return index >= 0 ? index + 1 : 1;
-  }
-
-  function genericLabel(element, kind, section) {
-    return `${elementType(element, kind)} ${ordinalIn(section?.root, element)}`;
-  }
-
+  const { componentName } = globalThis.PaperCaptureNaming;
   const { targetFor } = globalThis.PaperCaptureTargeting;
   const { fingerprintNav, pickNavCandidate } = globalThis.PaperCaptureNavBreakpoints;
+  const tagsApi = globalThis.PaperCaptureTags;
 
   function safeUrl(value) {
     if (!value) return value;
@@ -273,7 +194,7 @@
     state.hovered = element;
     const clone = cloneInline(element, { count: 0, chars: 0 });
     if (!clone) throw new Error("This element could not be serialized");
-    clone.setAttribute("layer-name", textOf(element) || element.tagName.toLowerCase());
+    clone.setAttribute("layer-name", componentName(element, { kind: state.captureKind }) || element.tagName.toLowerCase());
     clone.style.margin = "0";
     clone.style.position = "relative";
     clone.style.left = "auto";
@@ -290,8 +211,8 @@
       id: `take-${Date.now()}-${++state.sequence}`,
       mode: state.mode,
       kind: state.captureKind,
-      label: genericLabel(element, state.captureKind, section),
-      text: textOf(element),
+      label: componentName(element, { kind: state.captureKind, mode: state.mode }) || state.captureKind,
+      sourceText: textOf(element),
       tag: element.tagName.toLowerCase(),
       url: location.href,
       viewport: { width: innerWidth, height: innerHeight, dpr: devicePixelRatio || 1 },
@@ -451,22 +372,28 @@
     return pickNavCandidate(navbarCandidateRows(), {})?.element || null;
   }
 
-  function semanticData(element) {
+  function semanticData(element, extras = {}) {
     const data = captureData(element);
+    const sectionId = extras.sectionId || data.sectionId;
+    const path = extras.path;
     return {
       ...data,
+      sectionId,
+      sectionLabel: extras.sectionLabel || data.sectionLabel,
       semantic: {
         tag: element.tagName.toLowerCase(),
         text: textOf(element),
         alt: element.getAttribute("alt") || "",
         href: element instanceof HTMLAnchorElement ? element.href : "",
         src: element instanceof HTMLImageElement ? element.currentSrc || element.src : "",
+        pcId: extras.pcId || (path ? tagsApi.pcIdFor(sectionId, path) : undefined),
+        path,
         x: Math.round(data.rect.x + scrollX),
         y: Math.round(data.rect.y + scrollY),
         w: Math.round(data.rect.width),
         h: Math.round(data.rect.height),
-        sectionId: data.sectionId,
-        sectionLabel: data.sectionLabel,
+        sectionId,
+        sectionLabel: extras.sectionLabel || data.sectionLabel,
       },
     };
   }
@@ -477,6 +404,7 @@
   }
 
   function clearSemanticOverlays() {
+    stopOverlayLoop();
     for (const overlay of state.semanticOverlays.values()) overlay.remove();
     state.semanticOverlays.clear();
   }
@@ -487,28 +415,64 @@
         overlay.style.display = "none";
         continue;
       }
-      const rect = element.getBoundingClientRect();
-      const onScreen = rect.bottom >= 0 && rect.right >= 0 && rect.top <= innerHeight && rect.left <= innerWidth;
+      if (overlay.dataset.attached === "host") {
+        overlay.style.display = "block";
+        continue;
+      }
+      const rect = tagsApi.viewportRect(element);
+      const onScreen = rect.top + rect.height >= 0 && rect.left + rect.width >= 0
+        && rect.top <= innerHeight && rect.left <= innerWidth;
       overlay.style.display = onScreen ? "block" : "none";
-      overlay.style.left = `${Math.round(rect.left)}px`;
-      overlay.style.top = `${Math.round(rect.top)}px`;
-      overlay.style.width = `${Math.round(rect.width)}px`;
-      overlay.style.height = `${Math.round(rect.height)}px`;
+      if (onScreen) tagsApi.applyOverlayBox(overlay, rect);
     }
+  }
+
+  function stopOverlayLoop() {
+    if (state.overlayLoop) cancelAnimationFrame(state.overlayLoop);
+    state.overlayLoop = 0;
+  }
+
+  function startOverlayLoop() {
+    if (state.overlayLoop) return;
+    const tick = () => {
+      layoutSemanticOverlays();
+      state.overlayLoop = state.semanticOverlays.size ? requestAnimationFrame(tick) : 0;
+    };
+    state.overlayLoop = requestAnimationFrame(tick);
   }
 
   function showSemanticOverlays() {
     clearSemanticOverlays();
     for (const element of semanticElements()) {
       const outline = document.createElement("x-paper-semantic-outline");
+      outline.setAttribute("data-paper-tool", "capture-extension");
       const tagChip = document.createElement("x-paper-semantic-chip");
+      tagChip.setAttribute("data-paper-tool", "capture-extension");
       tagChip.textContent = `<${element.tagName.toLowerCase()}>`;
       outline.append(tagChip);
-      root.append(outline);
+      tagsApi.attachOutline(element, outline, root);
       state.semanticOverlays.set(element, outline);
     }
     layoutSemanticOverlays();
+    startOverlayLoop();
     return state.semanticOverlays.size;
+  }
+
+  function sectionRootsForWalk() {
+    const { chrome, bands } = globalThis.PaperCaptureSections.contentBands(semanticSectionRoots(), { scrollY });
+    const roots = [];
+    for (const node of chrome) roots.push({ id: "00", label: "header", root: node });
+    const paper = Array.isArray(state.paperSections) ? state.paperSections : [];
+    bands.forEach((root, index) => {
+      const mid = sectionTopOf(root) + Math.max(0, root.getBoundingClientRect().height) / 2;
+      const hit = paper.length ? globalThis.PaperCaptureSections.matchCensus(mid, paper) : null;
+      roots.push({
+        id: hit?.id && hit.id !== "00" ? hit.id : String(index + 1).padStart(2, "0"),
+        label: hit?.label || `section-${index + 1}`,
+        root,
+      });
+    });
+    return roots;
   }
 
   function captureIdFor(element) {
@@ -527,47 +491,34 @@
       return;
     }
     const target = targetFor(element, state.mode, state.captureKind, state.parentDepth);
-    const rect = target.getBoundingClientRect();
+    const rect = tagsApi.viewportRect(target);
     box.style.display = "block";
     box.style.left = `${Math.round(rect.left)}px`;
     box.style.top = `${Math.round(rect.top)}px`;
     box.style.width = `${Math.round(rect.width)}px`;
     box.style.height = `${Math.round(rect.height)}px`;
-    if (state.mode === "tags") {
-      chip.textContent = `<${target.tagName.toLowerCase()}>`;
-      chip.removeAttribute("data-pair-step");
-      return;
-    }
-    const type = elementType(target, state.captureKind);
-    if (state.pairStep) {
-      chip.textContent = "";
-      const badge = document.createElement("b");
-      badge.textContent = String(state.pairStep).padStart(2, "0");
-      chip.append(badge, document.createTextNode(type));
-      chip.setAttribute("data-pair-step", String(state.pairStep));
-      return;
-    }
-    chip.textContent = type;
-    chip.removeAttribute("data-pair-step");
+    chip.textContent = state.mode === "tags"
+      ? `<${target.tagName.toLowerCase()}> · ${textOf(target)}`
+      : `${state.captureKind} · ${target.tagName.toLowerCase()} · ${textOf(target)}`;
   }
 
-  function setRecording(recording, mode = state.mode, captureKind = state.captureKind, pairStep = 0) {
+  function setRecording(recording, mode = state.mode, captureKind = state.captureKind) {
     state.recording = Boolean(recording);
     state.mode = mode;
     state.captureKind = captureKind;
-    state.pairStep = Number(pairStep) || 0;
     state.parentDepth = 0;
     status.style.display = state.recording ? "flex" : "none";
-    statusText.textContent = state.pairStep ? `State ${state.pairStep} of 2` : `Record · ${captureKind}`;
-    status.toggleAttribute("data-pair", Boolean(state.pairStep));
+    statusText.textContent = `Record · ${captureKind}`;
     document.documentElement.toggleAttribute("data-paper-capture-recording", state.recording);
     if (!state.recording) box.style.display = "none";
     if (state.mode === "tags") showSemanticOverlays();
     else clearSemanticOverlays();
   }
 
-  window.addEventListener("scroll", layoutSemanticOverlays, { passive: true });
+  window.addEventListener("scroll", layoutSemanticOverlays, { passive: true, capture: true });
   window.addEventListener("resize", layoutSemanticOverlays, { passive: true });
+  visualViewport?.addEventListener("scroll", layoutSemanticOverlays, { passive: true });
+  visualViewport?.addEventListener("resize", layoutSemanticOverlays, { passive: true });
 
   document.addEventListener("pointermove", (event) => {
     if (!state.recording) return;
@@ -658,21 +609,40 @@
       if (seen.has(signature)) continue;
       seen.add(signature);
       const captureId = captureIdFor(element);
-      candidates.push({ captureId, label: textOf(element) });
+      candidates.push({ captureId, label: componentName(element, { kind: state.captureKind }) });
       if (candidates.length >= 12) break;
     }
     return candidates;
   }
 
   function semanticNodes() {
-    return semanticElements().map((element) => semanticData(element).semantic);
+    const roots = sectionRootsForWalk();
+    if (!roots.length) return semanticElements().map((element) => semanticData(element).semantic);
+    const seen = new Set();
+    const nodes = [];
+    for (const section of roots) {
+      for (const row of tagsApi.walkLayerIds(section.root, section.id)) {
+        if (!visible(row.element) || seen.has(row.element)) continue;
+        seen.add(row.element);
+        nodes.push(semanticData(row.element, {
+          pcId: row.pcId,
+          path: row.path,
+          sectionId: row.sectionId,
+          sectionLabel: section.label,
+        }).semantic);
+      }
+    }
+    for (const element of semanticElements()) {
+      if (seen.has(element)) continue;
+      nodes.push(semanticData(element).semantic);
+    }
+    return nodes;
   }
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (!message || typeof message.type !== "string") return false;
     if (message.type === "HC_SET_PAPER_SECTIONS") {
       state.paperSections = Array.isArray(message.sections) ? message.sections : [];
-      state.sectionRoots = null;
       sendResponse({ ok: true, count: state.paperSections.length });
       return false;
     }
@@ -681,7 +651,7 @@
       return false;
     }
     if (message.type === "HC_SET_RECORDING") {
-      setRecording(message.recording, message.mode, message.captureKind, message.pairStep);
+      setRecording(message.recording, message.mode, message.captureKind);
       sendResponse({ ok: true });
       return false;
     }
@@ -793,8 +763,17 @@
           kind: "tags-scan",
           label: `Tags scan · ${nodes.length} nodes`,
           url: location.href,
-          viewport: { width: innerWidth, height: innerHeight, dpr: devicePixelRatio || 1 },
+          viewport: {
+            width: innerWidth,
+            height: innerHeight,
+            dpr: devicePixelRatio || 1,
+            contractWidth: tagsApi.DESKTOP_WIDTH,
+          },
           semanticNodes: nodes,
+          layerIds: {
+            tagged: nodes.filter((node) => node.pcId).length,
+            scanned: nodes.length,
+          },
           capturedAt: new Date().toISOString(),
         },
       });
@@ -804,4 +783,5 @@
   });
 
   setRecording(false);
+  window.__PAPER_CAPTURE_EXTENSION__ = true;
 })();

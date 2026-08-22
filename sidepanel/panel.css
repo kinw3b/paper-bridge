@@ -332,11 +332,30 @@ code { padding: 1px 4px; border-radius: var(--radius); background: var(--bg); co
 .nav-progress.working .nav-progress-spinner { display: inline-block; animation: spin 750ms linear infinite; }
 .nav-progress-track { height: 3px; margin-top: 10px; overflow: hidden; background: var(--line); }
 .nav-progress-track > span { display: block; width: 0; height: 100%; background: var(--accent); transition: width 240ms ease; }
-.nav-progress-steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-top: 10px; }
-.nav-progress-steps > div { display: flex; align-items: flex-start; gap: 6px; min-width: 0; }
-.nav-progress-steps i { width: 8px; height: 8px; margin-top: 2px; flex: 0 0 auto; border: 1px solid var(--line-strong); }
-.nav-progress-steps span { min-width: 0; color: var(--text); font: 700 9px/1.2 var(--mono); text-transform: uppercase; letter-spacing: .06em; }
-.nav-progress-steps small { display: block; margin-top: 3px; color: var(--muted); font: 600 8px/1 var(--mono); letter-spacing: .06em; white-space: nowrap; }
+.nav-progress-steps { display: grid; gap: 0; margin-top: 10px; }
+.nav-progress-steps > div { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 8px 0; }
+.nav-progress-steps > div + div { border-top: 1px solid var(--line); }
+.nav-progress-steps i { width: 8px; height: 8px; flex: 0 0 auto; border: 1px solid var(--line-strong); }
+.nav-progress-steps span {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  flex: 1;
+  min-width: 0;
+  color: var(--text);
+  font: 700 9px/1.3 var(--mono);
+  text-transform: uppercase;
+  letter-spacing: .06em;
+}
+.nav-progress-steps small {
+  flex: 0 1 auto;
+  margin: 0;
+  color: var(--muted);
+  font: 600 8px/1.3 var(--mono);
+  letter-spacing: .06em;
+  text-align: right;
+}
 .nav-progress-steps .capturing i, .nav-progress-steps .captured i, .nav-progress-steps .confirming i { border-color: var(--accent); border-top-color: transparent; border-radius: 50%; animation: spin 750ms linear infinite; }
 .nav-progress-steps .confirmed i { border-color: var(--accent); background: var(--accent-soft); }
 .nav-progress-steps .confirmed small { color: var(--accent); }
@@ -345,6 +364,14 @@ code { padding: 1px 4px; border-radius: var(--radius); background: var(--bg); co
 .nav-progress > p { margin: 10px 0 0; color: var(--muted); font-size: 9px; line-height: 1.4; }
 .nav-progress.complete { border-color: var(--accent-line); background: var(--active-bg); }
 .nav-progress.failed { border-color: var(--danger); background: rgba(255, 107, 94, .06); }
+
+.tag-progress { margin: 0 20px 12px; padding: 12px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel-raised); }
+.tag-progress-head { display: flex; align-items: center; gap: 8px; font-size: 10px; }
+.tag-progress-head strong { flex: 1; color: var(--ink); font: 700 10px/1.2 var(--mono); text-transform: uppercase; letter-spacing: .08em; }
+.tag-progress-head span { color: var(--accent); font: 700 10px/1 var(--mono); }
+.tag-progress > p { margin: 10px 0 0; color: var(--muted); font-size: 9px; line-height: 1.4; }
+.tag-progress.locked { border-color: var(--accent-line); background: var(--active-bg); }
+.tag-progress.failed { border-color: var(--danger); background: rgba(255, 107, 94, .06); }
 
 @keyframes spin { to { transform: rotate(360deg); } }
 
@@ -444,6 +471,22 @@ code { padding: 1px 4px; border-radius: var(--radius); background: var(--bg); co
   font-size: 21px;
   font-weight: 800;
 }
+.complete-copy { color: var(--text); font-size: 12px; line-height: 1.55; }
+.agent-cue {
+  margin-top: 22px;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel-raised);
+  text-align: left;
+}
+.agent-cue .agent-prompt {
+  margin: 4px 0 6px;
+  color: var(--ink);
+  font: 750 20px/1.1 var(--sans);
+  letter-spacing: -.03em;
+}
+.agent-cue p:last-child { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.45; }
 
 [hidden] { display: none !important; }
 

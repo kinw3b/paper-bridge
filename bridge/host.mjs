@@ -3,9 +3,9 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { applySemanticsToPaper, applySemanticsByLayerId } from "./semantics.mjs";
+import { applySemanticsToPaper } from "./semantics.mjs";
 
-const HOST_VERSION = "1.2.24";
+const HOST_VERSION = "1.2.28";
 const BOARD_NAMES = ["Navigation", "Hover States", "Components"];
 const MAX_MESSAGE_BYTES = 8 * 1024 * 1024;
 const MAX_HTML_BYTES = 220_000;
@@ -124,6 +124,14 @@ function readJsonFile(file) {
   } catch {
     return null;
   }
+}
+
+function loadLayerIds(projectRoot) {
+  return readJsonFile(path.join(projectRoot, "capture", "home-desktop", "layer-ids.json"));
+}
+
+function loadPaperLayerIds(projectRoot) {
+  return readJsonFile(path.join(projectRoot, "capture", "home-desktop", "paper-layer-ids.json"));
 }
 
 function loadPaperSections(projectRoot) {
@@ -354,7 +362,10 @@ function takeRowHtml(take) {
 function persistTakeArtifacts(take) {
   const folder = takeFolder(take);
   fs.mkdirSync(folder, { recursive: true });
-  const base = `${String(take.sectionId || "00").padStart(2, "0")}-${slug(take.label, take.kind)}`;
+  // Labels are archetype names now, so two takes in one section can share one.
+  // The take id keeps their files apart.
+  const suffix = String(take.id || "").slice(-6).replace(/[^a-z0-9]/gi, "") || "take";
+  const base = `${String(take.sectionId || "00").padStart(2, "0")}-${slug(take.label, take.kind)}-${suffix}`;
   if (take.mode === "tags") {
     // APPLY_SEMANTICS writes the census and mutates home-desktop directly.
   } else if (take.defaultHtml || take.hoverHtml) {
@@ -407,7 +418,7 @@ function writeSemantics(take) {
     capturedAt: new Date().toISOString(),
     url: take.url || config.sourceUrl,
     page: "home",
-    width: Number(take.viewport?.width || 1600),
+    width: Number(take.viewport?.contractWidth || take.viewport?.width || 1600),
     nodeCount: nodes.length,
     sections: [...groups.values()].sort((a, b) => a.id.localeCompare(b.id)),
   };
@@ -439,29 +450,30 @@ async function applySemanticTake(take) {
   if (!take?.id || take.mode !== "tags") throw new Error("Semantic scan payload is invalid");
   persistTakeArtifacts(take);
   const doc = writeSemantics(take);
-  // The pipeline's pc- id maps make tagging exact; fall back to matching only when absent.
-  const captureDir = path.join(config.projectRoot, "capture", "home-desktop");
-  const layerIds = readJsonFile(path.join(captureDir, "layer-ids.json"));
-  const paperIds = readJsonFile(path.join(captureDir, "paper-layer-ids.json"));
-  const result = layerIds?.ids && paperIds?.ids
-    ? await applySemanticsByLayerId({ call: paperCall, layerIds, paperIds })
-    : await applySemanticsToPaper({ call: paperCall, doc, artboard: "home-desktop" });
-  try {
-    writeJson(path.join(config.projectRoot, "qa", "paper-semantics-debug.json"), result.debug);
-  } catch { /* diagnostics are best effort */ }
+  const layerIds = loadLayerIds(config.projectRoot);
+  const paperLayerIds = loadPaperLayerIds(config.projectRoot);
+  const result = await applySemanticsToPaper({
+    call: paperCall,
+    doc,
+    artboard: "home-desktop",
+    paperLayerIds,
+  });
   const session = sessionState();
+  const tagged = semanticList(take).filter((node) => node.pcId).length;
   const receipt = {
     takeId: take.id,
     board: "home-desktop",
     semantic: true,
-    strategy: result.strategy || "match",
     scanned: result.scanned,
-    considered: result.considered,
     sourceSections: result.sourceSections,
     missingSections: result.missingSections,
     matched: result.matched,
     renamed: result.renamed,
-    updates: result.updates,
+    layerIds: {
+      available: Object.keys(layerIds?.ids || {}).length,
+      tagged,
+      matched: result.matchedByLayerId || 0,
+    },
     addedAt: new Date().toISOString(),
   };
   session.receipts[take.id] = receipt;
@@ -492,7 +504,7 @@ async function commitTake(take) {
   if (!paperNodeId) throw new Error(`Paper returned no node receipt for ${take.label || take.kind}`);
   try {
     await paperCall("rename_nodes", {
-      updates: [{ nodeId: paperNodeId, name: `${take.kind || take.mode} · ${take.label || "take"}` }],
+      updates: [{ nodeId: paperNodeId, name: take.label || take.kind || take.mode || "Capture" }],
     });
     await paperCall("update_styles", {
       updates: [{ nodeIds: [board.id], styles: { height: "fit-content", overflow: "visible" } }],

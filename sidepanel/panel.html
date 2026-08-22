@@ -47,15 +47,25 @@
       <nav class="stage-rail" aria-label="Capture stages" id="stageRail"></nav>
 
       <div class="stage-heading">
+        <div>
+          <p class="step-kicker" id="stepKicker">STEP 1 OF 5</p>
+          <h2 id="stageTitle">Navbar + Dropdowns</h2>
+        </div>
         <label class="auto-toggle" data-tooltip="Scans your entire page on all steps." title="Scans your entire page on all steps.">
           <input type="checkbox" id="autoMode">
           <span>Auto</span>
         </label>
-        <p class="step-kicker" id="stepKicker">STEP 1 OF 5</p>
-        <h2 id="stageTitle">Navbar + Dropdowns</h2>
       </div>
 
       <p class="stage-copy" id="stageCopy"></p>
+
+      <section class="tag-progress" id="tagProgress" hidden>
+        <div class="tag-progress-head">
+          <strong id="tagProgressLabel">Desktop layout lock</strong>
+          <span id="tagProgressCount">0 matched</span>
+        </div>
+        <p id="tagProgressHelp">Scan names home-desktop layers from the 1600 pc-id tree. Outlines stay on the elements so they cannot drift.</p>
+      </section>
 
       <div class="kind-picker" id="navKindPicker" hidden>
         <button class="kind active" data-kind="navbar">Navbar</button>
@@ -104,8 +114,13 @@
     <section class="complete" id="complete" hidden>
       <div class="complete-check">✓</div>
       <p class="step-kicker">CAPTURE COMPLETE</p>
-      <h2>Paper has the session.</h2>
-      <p>The final receipt and <code>human-hover-done.json</code> were written. This capture session is closed.</p>
+      <h2>If you’re happy with what you captured, Continue.</h2>
+      <p class="complete-copy">Paper has the session. Go back to the agent and send <strong>Continue</strong> — we are ready to move into the next phase.</p>
+      <div class="agent-cue" role="status">
+        <p class="step-kicker">AGENT</p>
+        <p class="agent-prompt">Continue</p>
+        <p>Ready for Design Library + Tokens.</p>
+      </div>
     </section>
   </main>
   <script type="module" src="panel.js"></script>

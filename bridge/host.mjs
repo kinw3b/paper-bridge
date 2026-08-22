@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { applySemanticsToPaper, applySemanticsByLayerId } from "./semantics.mjs";
 
-const HOST_VERSION = "1.2.23";
+const HOST_VERSION = "1.2.24";
 const BOARD_NAMES = ["Navigation", "Hover States", "Components"];
 const MAX_MESSAGE_BYTES = 8 * 1024 * 1024;
 const MAX_HTML_BYTES = 220_000;
@@ -124,6 +124,21 @@ function readJsonFile(file) {
   } catch {
     return null;
   }
+}
+
+function loadPaperSections(projectRoot) {
+  const capture = path.join(projectRoot, "capture", "home-desktop");
+  for (const name of ["review-sequence.json", "section-ids.json"]) {
+    const rows = readJsonFile(path.join(capture, name))?.sections || [];
+    const sections = rows.map((section, index) => ({
+      id: String(section.id || String(index + 1).padStart(2, "0")).padStart(2, "0"),
+      slug: section.slug || section.name || "",
+      top: Number(section.top ?? section.bbox?.y ?? section.y),
+      h: Number(section.height ?? section.h ?? section.bbox?.h ?? 0),
+    })).filter((section) => Number.isFinite(section.top));
+    if (sections.length) return sections;
+  }
+  return [];
 }
 
 export function readActiveSession() {
@@ -516,7 +531,11 @@ async function startSession(nextConfig) {
   session.paperFileId = config.paperFileId;
   session.status = "active";
   saveSession(session);
-  return { boards: Object.keys(boards), projectRoot: config.projectRoot };
+  return {
+    boards: Object.keys(boards),
+    projectRoot: config.projectRoot,
+    paperSections: loadPaperSections(config.projectRoot),
+  };
 }
 
 function completeSession(summary) {

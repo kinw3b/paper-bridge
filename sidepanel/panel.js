@@ -431,10 +431,13 @@ async function startCapture() {
     if (!projectRoot.startsWith("/")) throw new Error("Project folder must be an absolute path");
     activeTab = rememberSourceTab(await currentTab());
     await connectHost();
-    await nativeRequest("START_SESSION", {
+    const started = await nativeRequest("START_SESSION", {
       config: { paperFileId, projectRoot, paperEndpoint, sourceUrl: cleanSourceUrl(activeTab.url) },
     });
     await ensureInjected(activeTab.id);
+    if (started?.paperSections?.length) {
+      await pageMessage({ type: "HC_SET_PAPER_SECTIONS", sections: started.paperSections });
+    }
     await chrome.storage.local.set({ paperFileId, projectRoot, paperEndpoint });
     ui.setup.hidden = true;
     ui.workspace.hidden = false;

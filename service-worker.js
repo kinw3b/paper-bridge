@@ -33,7 +33,7 @@ async function inject(tabId) {
       });
       await chrome.scripting.executeScript({
         target: { tabId },
-        files: ["content/targeting.js", "content/nav-breakpoints.js", "content/capture.js"],
+        files: ["content/targeting.js", "content/nav-breakpoints.js", "content/paper-sections.js", "content/capture.js"],
       });
       return { ok: true, reused: false };
     } catch (error) {

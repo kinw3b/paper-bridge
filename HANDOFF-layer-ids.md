@@ -18,7 +18,7 @@ Four matching strategies were tried in the extension and all are dead ends:
 
 | Strategy | Result |
 |---|---|
-| Section index (`01 ·` band) | DOM bands ≠ pipeline sections; hero lives in `<header>` so numbering is offset by 2 |
+| Section index (`01 ·` band) | Was offset when every `<header>` counted as chrome `00`. 1.2.24 loads Paper `review-sequence.json` / `section-ids.json` and treats only a compact top bar as `00` |
 | Exact + fuzzy text | 86 / 278. Cannot match `<img>` (no text); breaks on duplicate copy (nav vs hero "Get Started Now") |
 | Absolute page geometry | Paper's rebuild has its own padding; coords never align |
 | Per-section calibrated geometry | Offsets drift down the page; still ~86 |

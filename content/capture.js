@@ -14,6 +14,7 @@
     semanticOverlays: new Map(),
     sectionRoots: null,
     sectionRootsAt: 0,
+    paperSections: [],
     pairStep: 0,
   };
 
@@ -102,29 +103,18 @@
     // Only outermost bands survive, so a card marked "section" never outranks the band holding it.
     const roots = candidates.filter((candidate) =>
       !candidates.some((other) => other !== candidate && other.contains(candidate)));
-    const ordered = roots.sort((a, b) => {
-      const position = a.compareDocumentPosition(b);
-      if (position & Node.DOCUMENT_POSITION_FOLLOWING) return -1;
-      if (position & Node.DOCUMENT_POSITION_PRECEDING) return 1;
-      return 0;
-    });
+    const ordered = roots.sort((a, b) => sectionTopOf(a) - sectionTopOf(b));
     state.sectionRoots = ordered;
     state.sectionRootsAt = now;
     return ordered;
   }
 
-  // Site chrome above the first content band keeps the reserved "00", so hero always lands on 01.
   function isChrome(root) {
-    const tag = root.tagName.toLowerCase();
-    const role = String(root.getAttribute("role") || "").toLowerCase();
-    return tag === "header" || tag === "nav" || role === "banner" || role === "navigation";
+    return globalThis.PaperCaptureSections.isCompactChrome(root, { scrollY });
   }
 
   function sectionBands() {
-    const roots = semanticSectionRoots();
-    let start = 0;
-    while (start < roots.length && isChrome(roots[start])) start += 1;
-    return { chrome: roots.slice(0, start), bands: roots.slice(start) };
+    return globalThis.PaperCaptureSections.contentBands(semanticSectionRoots(), { scrollY });
   }
 
   addEventListener("resize", () => { state.sectionRoots = null; }, { passive: true });
@@ -133,26 +123,32 @@
     return element.getBoundingClientRect().top + scrollY;
   }
 
-  // Every take earns a real band number; "00" is reserved for the chrome above the first band.
+  // Paper census wins (01 · hero). DOM fallback skips only compact nav chrome.
   function sectionOf(element) {
+    const mid = sectionTopOf(element) + Math.max(0, element.getBoundingClientRect().height) / 2;
+    if (state.paperSections?.length) {
+      const hit = globalThis.PaperCaptureSections.matchCensus(mid, state.paperSections);
+      if (hit) {
+        const { chrome, bands } = sectionBands();
+        const root = [...chrome, ...bands].find((node) => node === element || node.contains(element))
+          || bands[Number(hit.id) - 1]
+          || document.body;
+        return { ...hit, root, label: hit.label || sectionSlug(root, Number(hit.id) - 1) };
+      }
+    }
     const { chrome, bands } = sectionBands();
     const header = chrome.find((root) => root === element || root.contains(element));
     if (header) return { id: "00", label: "header", root: header };
-    if (!bands.length) return { id: "01", label: "page", root: document.body };
-    let index = bands.findIndex((root) => root === element || root.contains(element));
-    if (index < 0) {
-      const top = sectionTopOf(element);
-      if (top < sectionTopOf(bands[0])) return { id: "00", label: "header", root: chrome[0] || bands[0] };
-      // Unwrapped element (portal, fixed overlay): claim the last band that starts above it.
-      for (let cursor = bands.length - 1; cursor >= 0; cursor -= 1) {
-        if (sectionTopOf(bands[cursor]) <= top) { index = cursor; break; }
-      }
-      if (index < 0) index = 0;
-    }
+    const assigned = globalThis.PaperCaptureSections.assignFromBands(element, bands, {
+      scrollY,
+      getTop: sectionTopOf,
+    });
+    if (assigned.id === "00") return { ...assigned, root: chrome[0] || bands[0] };
+    const index = Math.max(0, Number(assigned.id) - 1);
     return {
-      id: String(index + 1).padStart(2, "0"),
-      label: sectionSlug(bands[index], index),
-      root: bands[index],
+      ...assigned,
+      label: sectionSlug(assigned.root || bands[index], index),
+      root: assigned.root || bands[index] || document.body,
     };
   }
 
@@ -674,6 +670,12 @@
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (!message || typeof message.type !== "string") return false;
+    if (message.type === "HC_SET_PAPER_SECTIONS") {
+      state.paperSections = Array.isArray(message.sections) ? message.sections : [];
+      state.sectionRoots = null;
+      sendResponse({ ok: true, count: state.paperSections.length });
+      return false;
+    }
     if (message.type === "HC_PING") {
       sendResponse({ ok: true });
       return false;

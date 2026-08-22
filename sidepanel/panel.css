@@ -242,13 +242,12 @@ code { padding: 1px 4px; border-radius: var(--radius); background: var(--bg); co
 .stage-dot.active { background: var(--active-bg); color: var(--accent); box-shadow: inset 0 -2px var(--accent); }
 .stage-dot.complete { background: var(--panel); color: var(--accent); box-shadow: inset 0 -2px var(--accent-line); }
 
-.stage-heading { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; padding: 20px 20px 0; }
-.stage-heading .step-kicker { margin: 0; }
-.stage-heading h2 { margin-bottom: 0; }
-.stage-heading .step-kicker + h2 { margin-top: -4px; }
-.stage-copy { min-height: 56px; margin: 10px 20px 14px; }
+.stage-heading { display: flex; flex-direction: column; align-items: flex-start; gap: 14px; padding: 20px 20px 0; }
+.stage-heading > div { display: grid; gap: 8px; }
+.stage-heading .step-kicker, .stage-heading h2 { margin: 0; }
+.stage-copy { margin: 10px 20px 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
-.auto-toggle { position: relative; margin: 0 0 6px; cursor: pointer; }
+.auto-toggle { position: relative; margin: 0; cursor: pointer; }
 .auto-toggle input { position: absolute; opacity: 0; }
 .auto-toggle span {
   display: inline-flex !important;
@@ -328,15 +327,15 @@ code { padding: 1px 4px; border-radius: var(--radius); background: var(--bg); co
 .nav-progress-head { display: flex; align-items: center; gap: 8px; font-size: 10px; }
 .nav-progress-head strong { flex: 1; color: var(--ink); font: 700 10px/1.2 var(--mono); text-transform: uppercase; letter-spacing: .08em; }
 .nav-progress-head > span:last-child { color: var(--accent); font: 700 10px/1 var(--mono); }
-.nav-progress-spinner { display: none; width: 12px; height: 12px; border: 2px solid var(--line-strong); border-top-color: var(--accent); border-radius: 50%; }
-.nav-progress.working .nav-progress-spinner { display: inline-block; animation: spin 750ms linear infinite; }
-.nav-progress-track { height: 3px; margin-top: 10px; overflow: hidden; background: var(--line); }
-.nav-progress-track > span { display: block; width: 0; height: 100%; background: var(--accent); transition: width 240ms ease; }
-.nav-progress-steps { display: grid; gap: 0; margin-top: 10px; }
-.nav-progress-steps > div { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 8px 0; }
-.nav-progress-steps > div + div { border-top: 1px solid var(--line); }
-.nav-progress-steps i { width: 8px; height: 8px; flex: 0 0 auto; border: 1px solid var(--line-strong); }
-.nav-progress-steps span {
+.nav-progress-spinner, .tag-progress-spinner { display: none; width: 12px; height: 12px; border: 2px solid var(--line-strong); border-top-color: var(--accent); border-radius: 50%; }
+.nav-progress.working .nav-progress-spinner, .tag-progress.working .tag-progress-spinner { display: inline-block; animation: spin 750ms linear infinite; }
+.nav-progress-track, .tag-progress-track { height: 3px; margin-top: 10px; overflow: hidden; background: var(--line); }
+.nav-progress-track > span, .tag-progress-track > span { display: block; width: 0; height: 100%; background: var(--accent); transition: width 240ms ease; }
+.nav-progress-steps, .tag-progress-steps { display: grid; gap: 0; margin-top: 10px; }
+.nav-progress-steps > div, .tag-progress-steps > div { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 8px 0; }
+.nav-progress-steps > div + div, .tag-progress-steps > div + div { border-top: 1px solid var(--line); }
+.nav-progress-steps i, .tag-progress-steps i { width: 8px; height: 8px; flex: 0 0 auto; border: 1px solid var(--line-strong); }
+.nav-progress-steps span, .tag-progress-steps span {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
@@ -348,7 +347,7 @@ code { padding: 1px 4px; border-radius: var(--radius); background: var(--bg); co
   text-transform: uppercase;
   letter-spacing: .06em;
 }
-.nav-progress-steps small {
+.nav-progress-steps small, .tag-progress-steps small {
   flex: 0 1 auto;
   margin: 0;
   color: var(--muted);
@@ -356,11 +355,12 @@ code { padding: 1px 4px; border-radius: var(--radius); background: var(--bg); co
   letter-spacing: .06em;
   text-align: right;
 }
-.nav-progress-steps .capturing i, .nav-progress-steps .captured i, .nav-progress-steps .confirming i { border-color: var(--accent); border-top-color: transparent; border-radius: 50%; animation: spin 750ms linear infinite; }
-.nav-progress-steps .confirmed i { border-color: var(--accent); background: var(--accent-soft); }
-.nav-progress-steps .confirmed small { color: var(--accent); }
-.nav-progress-steps .failed i { border-color: var(--danger); background: rgba(255, 107, 94, .18); }
-.nav-progress-steps .failed small { color: var(--danger); }
+.nav-progress-steps .capturing i, .nav-progress-steps .captured i, .nav-progress-steps .confirming i,
+.tag-progress-steps .capturing i, .tag-progress-steps .confirming i { border-color: var(--accent); border-top-color: transparent; border-radius: 50%; animation: spin 750ms linear infinite; }
+.nav-progress-steps .confirmed i, .tag-progress-steps .confirmed i { border-color: var(--accent); background: var(--accent-soft); }
+.nav-progress-steps .confirmed small, .tag-progress-steps .confirmed small { color: var(--accent); }
+.nav-progress-steps .failed i, .tag-progress-steps .failed i { border-color: var(--danger); background: rgba(255, 107, 94, .18); }
+.nav-progress-steps .failed small, .tag-progress-steps .failed small { color: var(--danger); }
 .nav-progress > p { margin: 10px 0 0; color: var(--muted); font-size: 9px; line-height: 1.4; }
 .nav-progress.complete { border-color: var(--accent-line); background: var(--active-bg); }
 .nav-progress.failed { border-color: var(--danger); background: rgba(255, 107, 94, .06); }
@@ -368,9 +368,10 @@ code { padding: 1px 4px; border-radius: var(--radius); background: var(--bg); co
 .tag-progress { margin: 0 20px 12px; padding: 12px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel-raised); }
 .tag-progress-head { display: flex; align-items: center; gap: 8px; font-size: 10px; }
 .tag-progress-head strong { flex: 1; color: var(--ink); font: 700 10px/1.2 var(--mono); text-transform: uppercase; letter-spacing: .08em; }
-.tag-progress-head span { color: var(--accent); font: 700 10px/1 var(--mono); }
-.tag-progress > p { margin: 10px 0 0; color: var(--muted); font-size: 9px; line-height: 1.4; }
+.tag-progress-head > span:last-child { color: var(--accent); font: 700 10px/1 var(--mono); }
+.tag-progress > p { margin: 10px 0 0; color: var(--muted); font-size: 9px; line-height: 1.3; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tag-progress.locked { border-color: var(--accent-line); background: var(--active-bg); }
+.tag-progress.complete { border-color: var(--accent-line); background: var(--active-bg); }
 .tag-progress.failed { border-color: var(--danger); background: rgba(255, 107, 94, .06); }
 
 @keyframes spin { to { transform: rotate(360deg); } }
@@ -378,12 +379,20 @@ code { padding: 1px 4px; border-radius: var(--radius); background: var(--bg); co
 .record-card { display: flex; flex-direction: column; align-items: stretch; gap: 11px; margin: 0 20px; padding: 13px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel-raised); }
 .record-state { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; }
 .record-state strong { display: block; margin-bottom: 4px; color: var(--ink); font: 700 10px/1 var(--mono); text-transform: uppercase; letter-spacing: .08em; }
-.record-state p { margin: 0; color: var(--muted); font-size: 10px; line-height: 1.4; }
+.record-state p { margin: 0; color: var(--muted); font-size: 10px; line-height: 1.3; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .record-lamp { width: 8px; height: 8px; flex: 0 0 auto; background: var(--line-strong); }
 .record-card[data-pair-step="2"] { border-color: var(--pair-two-line); }
 .record-card[data-pair-step="2"] .record-lamp { background: var(--pair-two); }
 .record-card.recording { border-color: var(--record-line); }
 .record-card.recording .record-lamp { background: var(--record); box-shadow: 0 0 0 4px var(--record-soft); animation: blink 800ms ease-in-out infinite alternate; }
+.record-card.working { border-color: var(--accent-line); background: var(--active-bg); }
+.record-card.working .record-lamp {
+  border: 2px solid var(--line-strong);
+  border-top-color: var(--accent);
+  background: transparent;
+  border-radius: 50%;
+  animation: spin 750ms linear infinite;
+}
 @keyframes blink { to { opacity: .3; } }
 
 .record-button {
@@ -406,6 +415,14 @@ code { padding: 1px 4px; border-radius: var(--radius); background: var(--bg); co
 .record-button:hover:not(:disabled) { background: var(--bg); color: var(--record-strong); border-color: var(--record-strong); }
 .record-button:disabled { opacity: .45; cursor: wait; }
 .record-button span { width: 7px; height: 7px; background: currentColor; border-radius: 50%; }
+.record-button.working span {
+  width: 10px;
+  height: 10px;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  background: transparent;
+  animation: spin 750ms linear infinite;
+}
 
 .activity {
   position: absolute;
@@ -487,6 +504,12 @@ code { padding: 1px 4px; border-radius: var(--radius); background: var(--bg); co
   letter-spacing: -.03em;
 }
 .agent-cue p:last-child { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.45; }
+.agent-cue .ping-path {
+  margin-top: 8px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  letter-spacing: -.01em;
+}
 
 [hidden] { display: none !important; }
 

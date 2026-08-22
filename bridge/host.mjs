@@ -3,9 +3,9 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { applySemanticsToPaper } from "./semantics.mjs";
+import { applyPcIdNamesToArtboard, applySemanticsToPaper, pcIdNames, siblingHomeArtboards } from "./semantics.mjs";
 
-const HOST_VERSION = "1.2.28";
+const HOST_VERSION = "1.2.29";
 const BOARD_NAMES = ["Navigation", "Hover States", "Components"];
 const MAX_MESSAGE_BYTES = 8 * 1024 * 1024;
 const MAX_HTML_BYTES = 220_000;
@@ -14,6 +14,7 @@ let input = Buffer.alloc(0);
 let config = null;
 let mcpSessionId = null;
 let mcpConnected = false;
+let lastTagApply = null;
 
 function send(message) {
   const payload = Buffer.from(JSON.stringify(message));
@@ -277,6 +278,31 @@ function artifactRoot() {
   return path.join(config.projectRoot, "source-site", "components");
 }
 
+function continuePingPath() {
+  return path.join(config.projectRoot, "qa", "agent-pings", "1.3-continue.json");
+}
+
+function writeContinuePing(done) {
+  const ping = {
+    generatedFrom: "paper-capture-extension",
+    step: "1.3",
+    action: "continue",
+    next: "1.4",
+    completedAt: done.completedAt,
+    sourceUrl: done.sourceUrl,
+    paperFileId: done.paperFileId,
+    receipt: "source-site/components/human-hover-done.json",
+    takeCount: done.takeCount,
+    boards: done.boards,
+  };
+  writeJson(continuePingPath(), ping);
+  return {
+    file: "qa/agent-pings/1.3-continue.json",
+    step: ping.step,
+    next: ping.next,
+  };
+}
+
 function sessionPath() {
   return path.join(artifactRoot(), "capture-extension-session.json");
 }
@@ -458,7 +484,14 @@ async function applySemanticTake(take) {
     artboard: "home-desktop",
     paperLayerIds,
   });
-  const session = sessionState();
+  const names = pcIdNames(doc);
+  const info = mcpPayload(await paperCall("get_basic_info", {}));
+  const byTag = {};
+  for (const update of result.updates || []) {
+    const tag = String(update.name || "").split("·")[0].trim().toLowerCase();
+    if (!tag) continue;
+    byTag[tag] = (byTag[tag] || 0) + 1;
+  }
   const tagged = semanticList(take).filter((node) => node.pcId).length;
   const receipt = {
     takeId: take.id,
@@ -469,6 +502,9 @@ async function applySemanticTake(take) {
     missingSections: result.missingSections,
     matched: result.matched,
     renamed: result.renamed,
+    byTag,
+    breakpoints: [],
+    pendingBreakpoints: siblingHomeArtboards(info.artboards),
     layerIds: {
       available: Object.keys(layerIds?.ids || {}).length,
       tagged,
@@ -476,6 +512,14 @@ async function applySemanticTake(take) {
     },
     addedAt: new Date().toISOString(),
   };
+  lastTagApply = {
+    takeId: take.id,
+    names: Object.fromEntries(names),
+    propagate: result.propagate || [],
+    sectionTrees: result.sectionTrees || {},
+    desktopRenamed: result.renamed,
+  };
+  const session = sessionState();
   session.receipts[take.id] = receipt;
   const metadata = { ...take };
   const old = session.takes.findIndex((item) => item.id === take.id);
@@ -483,6 +527,30 @@ async function applySemanticTake(take) {
   else session.takes.push(metadata);
   saveSession(session);
   return receipt;
+}
+
+async function applyTagBreakpoint(artboard) {
+  if (!artboard) throw new Error("Breakpoint artboard is missing");
+  if (!lastTagApply) throw new Error("Scan desktop tags first");
+  const info = mcpPayload(await paperCall("get_basic_info", {}));
+  const row = await applyPcIdNamesToArtboard({
+    call: paperCall,
+    artboard,
+    artboards: info.artboards,
+    names: new Map(Object.entries(lastTagApply.names || {})),
+    propagate: lastTagApply.propagate || [],
+    sourceArtboard: "home-desktop",
+    sourceTrees: lastTagApply.sectionTrees,
+  });
+  const session = sessionState();
+  const receipt = session.receipts[lastTagApply.takeId];
+  if (receipt) {
+    receipt.breakpoints = [...(receipt.breakpoints || []).filter((item) => item.artboard !== artboard), row];
+    receipt.renamed = Number(lastTagApply.desktopRenamed || 0)
+      + receipt.breakpoints.reduce((count, item) => count + Number(item.renamed || 0), 0);
+    saveSession(session);
+  }
+  return row;
 }
 
 async function commitTake(take) {
@@ -563,10 +631,11 @@ function completeSession(summary) {
     receiptNodeIds: Object.values(session.receipts || {}).map((item) => item.paperNodeId).filter(Boolean),
   };
   writeJson(path.join(artifactRoot(), "human-hover-done.json"), done);
+  const ping = writeContinuePing(done);
   session.status = "complete";
   session.completedAt = done.completedAt;
   saveSession(session);
-  return done;
+  return { ...done, ping };
 }
 
 async function handle(message) {
@@ -585,6 +654,10 @@ async function handle(message) {
   if (message.type === "APPLY_SEMANTICS") {
     if (!config) throw new Error("Start the capture session first");
     return { receipt: await applySemanticTake(message.take) };
+  }
+  if (message.type === "APPLY_TAG_BREAKPOINT") {
+    if (!config) throw new Error("Start the capture session first");
+    return { receipt: await applyTagBreakpoint(message.artboard) };
   }
   if (message.type === "COMPLETE_SESSION") return { done: completeSession(message.summary) };
   throw new Error(`Unknown bridge message: ${message.type}`);

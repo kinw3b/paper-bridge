@@ -29,10 +29,52 @@ function paperIdMap(paperLayerIds) {
   return paperLayerIds;
 }
 
+export function parsePcId(pcId) {
+  const raw = String(pcId || "").trim();
+  const prefixed = raw.match(/^pc-(\d{2})-(.+)$/);
+  if (prefixed) return { sectionId: prefixed[1], path: `pc-${prefixed[2]}`, raw };
+  if (raw.startsWith("pc-")) return { sectionId: "", path: raw, raw };
+  return { sectionId: "", path: "", raw };
+}
+
+export function sectionMeta(name) {
+  const raw = String(name || "").trim();
+  const numbered = raw.match(/^(\d{2})\s*·\s*(.+)$/);
+  if (numbered) return { id: numbered[1], slug: numbered[2].trim().toLowerCase(), name: raw };
+  return { id: "", slug: raw.toLowerCase(), name: raw };
+}
+
+function isSemanticName(name) {
+  return /^[a-z][a-z0-9]*\s*·/i.test(String(name || "").trim());
+}
+
+function findBoard(artboards, name) {
+  return (artboards || []).find((item) => item.name === name)
+    || (artboards || []).find((item) => String(item.name || "").includes(name));
+}
+
+function findSectionFrame(sections, section) {
+  const id = String(section.id || "").padStart(2, "0");
+  const slug = String(section.slug || section.sectionLabel || "").trim().toLowerCase();
+  return (sections || []).find((node) => String(node.name || "").startsWith(`${id} ·`))
+    || (sections || []).find((node) => sectionMeta(node.name).slug === slug)
+    || (sections || []).find((node) => {
+      const other = sectionMeta(node.name).slug;
+      return slug && other && (other.includes(slug) || slug.includes(other));
+    });
+}
+
+function mappedId(paperByPc, pcId) {
+  const mapped = paperByPc[pcId];
+  return typeof mapped === "string" ? mapped : mapped?.id || "";
+}
+
 export function matchPaperNode(nodes, census) {
   const pcId = String(census.pcId || "").trim();
   if (pcId) {
-    const exact = (nodes || []).find((node) => node.name === pcId || node.pcId === pcId);
+    const path = parsePcId(pcId).path;
+    const exact = (nodes || []).find((node) => node.name === pcId || node.pcId === pcId
+      || (path && node.name === path));
     if (exact) return exact;
   }
   const want = norm(census.text || census.alt);
@@ -57,16 +99,40 @@ export function matchPaperNode(nodes, census) {
   return scored[0]?.score >= 1 ? scored[0].node : null;
 }
 
-async function walkPaperTree(call, rootId, depth = 0) {
-  if (!rootId || depth > 10) return [];
-  const list = childrenOf(payload(await call("get_children", { nodeId: rootId })));
+async function listChildren(call, nodeId) {
+  return childrenOf(payload(await call("get_children", { nodeId })));
+}
+
+async function mapChunk(items, size, fn) {
   const out = [];
-  for (const node of list) {
+  for (let index = 0; index < items.length; index += size) {
+    out.push(...await Promise.all(items.slice(index, index + size).map(fn)));
+  }
+  return out;
+}
+
+async function walkPaperTree(call, rootId) {
+  if (!rootId) return [];
+  const out = [];
+  let level = (await listChildren(call, rootId)).map((node, index) => {
     node.parentId = rootId;
-    out.push(node);
-    if (Number(node.childCount || node.children?.length || 0) > 0) {
-      out.push(...await walkPaperTree(call, node.id, depth + 1));
-    }
+    node.treePath = String(index);
+    return node;
+  });
+  let depth = 0;
+  while (level.length && depth <= 24) {
+    out.push(...level);
+    const parents = level.filter((node) => Number(node.childCount || node.children?.length || 0) > 0);
+    const groups = await mapChunk(parents, 10, async (parent) => {
+      const list = await listChildren(call, parent.id);
+      return list.map((node, index) => {
+        node.parentId = parent.id;
+        node.treePath = `${parent.treePath}.${index}`;
+        return node;
+      });
+    });
+    level = groups.flat();
+    depth += 1;
   }
   return out;
 }
@@ -113,52 +179,93 @@ async function hydratePaperTexts(call, nodes) {
 
 export async function applySemanticsToPaper({ call, doc, artboard = "home-desktop", paperLayerIds } = {}) {
   const info = payload(await call("get_basic_info", {}));
-  const board = (info.artboards || []).find((item) => item.name === artboard)
-    || (info.artboards || []).find((item) => String(item.name || "").includes(artboard));
+  const board = findBoard(info.artboards, artboard);
   if (!board?.id) throw new Error(`No ${artboard} artboard exists in Paper`);
-  const children = childrenOf(payload(await call("get_children", { nodeId: board.id })));
-  const sections = children.filter((node) => /^\d{2}\s*·/.test(node.name || ""));
+  const sections = childrenOf(payload(await call("get_children", { nodeId: board.id })));
   const updates = [];
+  const propagate = [];
   const used = new Set();
   const scanned = (doc.sections || []).reduce((count, section) => count + (section.nodes || []).length, 0);
   const missingSections = [];
   const paperByPc = paperIdMap(paperLayerIds);
   let matchedByLayerId = 0;
-  const queueRename = (nodeId, semantic) => {
+  const queueRename = (nodeId, semantic, extra = {}) => {
     if (!nodeId || used.has(nodeId)) return false;
-    used.add(nodeId);
     const name = semantic.paperName || semanticName(semantic);
+    used.add(nodeId);
     updates.push({ nodeId, name });
+    const from = extra.from || parsePcId(semantic.pcId).path;
+    if (from && from !== name) {
+      propagate.push({
+        sectionId: extra.sectionId || semantic.sectionId || "",
+        slug: String(extra.slug || semantic.sectionLabel || "").toLowerCase(),
+        from,
+        to: name,
+        treePath: extra.treePath || "",
+      });
+    }
     return true;
   };
+  const framed = [];
   for (const section of doc.sections || []) {
-    const frame = sections.find((node) => String(node.name || "").startsWith(`${section.id} ·`));
+    const frame = findSectionFrame(sections, section);
+    if (!frame) {
+      missingSections.push(section.id);
+      continue;
+    }
+    framed.push({ section, frame });
+  }
+  const walked = await mapChunk(framed, 3, async ({ section, frame }) => ({
+    section,
+    frame,
+    tree: await walkPaperTree(call, frame.id),
+  }));
+  const sectionTrees = {};
+  for (const { section, frame, tree } of walked) {
+    const meta = sectionMeta(frame.name);
+    const slug = meta.slug || String(section.slug || "").toLowerCase();
+    if (slug) sectionTrees[slug] = { id: frame.id, name: frame.name, nodes: tree };
+    const sectionIds = new Set(tree.map((node) => node.id));
+    const byName = new Map();
+    for (const node of tree) {
+      const name = String(node.name || "").trim();
+      if (name.startsWith("pc-") && !byName.has(name)) byName.set(name, node);
+    }
     const leftovers = [];
     for (const semantic of section.nodes || []) {
-      const mapped = semantic.pcId ? paperByPc[semantic.pcId] : null;
-      const nodeId = typeof mapped === "string" ? mapped : mapped?.id;
-      if (nodeId && queueRename(nodeId, semantic)) {
+      const parsed = parsePcId(semantic.pcId);
+      const named = byName.get(parsed.path) || byName.get(parsed.raw);
+      const mapped = [semantic.pcId, parsed.path, parsed.raw]
+        .filter(Boolean)
+        .map((key) => mappedId(paperByPc, key))
+        .find((id) => id && sectionIds.has(id));
+      const nodeId = (mapped && sectionIds.has(mapped) ? mapped : "") || named?.id || "";
+      if (nodeId && queueRename(nodeId, semantic, {
+        from: named?.name || parsed.path,
+        treePath: named?.treePath || "",
+        sectionId: section.id,
+        slug: section.slug,
+      })) {
         matchedByLayerId += 1;
         continue;
       }
       leftovers.push(semantic);
     }
     if (!leftovers.length) continue;
-    if (!frame) {
-      missingSections.push(section.id);
-      continue;
-    }
-    const tree = await walkPaperTree(call, frame.id);
     await hydratePaperTexts(call, tree);
     for (const semantic of leftovers) {
       let hit = matchPaperNode(tree.filter((node) => !used.has(node.id)), semantic);
       if (!hit) continue;
-      if (semantic.pcId && hit.name === semantic.pcId) matchedByLayerId += 1;
+      const parsed = parsePcId(semantic.pcId);
+      if (semantic.pcId && (hit.name === semantic.pcId || hit.name === parsed.path)) matchedByLayerId += 1;
       else hit = interactiveContainer(hit, tree, String(semantic.tag || "").toLowerCase());
       if (used.has(hit.id)) continue;
-      used.add(hit.id);
-      const name = semantic.paperName || semanticName(semantic);
-      if (hit.name !== name) updates.push({ nodeId: hit.id, name });
+      queueRename(hit.id, semantic, {
+        from: String(hit.name || "").startsWith("pc-") ? hit.name : parsed.path,
+        treePath: hit.treePath || "",
+        sectionId: section.id,
+        slug: section.slug,
+      });
     }
   }
   if (updates.length) {
@@ -174,5 +281,112 @@ export async function applySemanticsToPaper({ call, doc, artboard = "home-deskto
     matchedByLayerId,
     renamed: updates.length,
     updates,
+    propagate,
+    sectionTrees,
   };
+}
+
+export function pcIdNames(doc) {
+  const names = new Map();
+  for (const section of doc.sections || []) {
+    const slug = String(section.slug || "").trim().toLowerCase();
+    for (const node of section.nodes || []) {
+      const parsed = parsePcId(node.pcId);
+      if (!parsed.path) continue;
+      const name = node.paperName || semanticName(node);
+      names.set(node.pcId, name);
+      names.set(parsed.path, name);
+      if (section.id) names.set(`${section.id}::${parsed.path}`, name);
+      if (slug) names.set(`${slug}::${parsed.path}`, name);
+    }
+  }
+  return names;
+}
+
+export function siblingHomeArtboards(artboards, primary = "home-desktop") {
+  return (artboards || [])
+    .map((item) => item.name)
+    .filter((name) => name && name !== primary && /^home-/.test(String(name)));
+}
+
+function sourceTreeFor(sourceTrees, meta) {
+  if (!sourceTrees || !meta) return null;
+  return sourceTrees[meta.slug]
+    || Object.values(sourceTrees).find((row) => sectionMeta(row.name).id && sectionMeta(row.name).id === meta.id)
+    || null;
+}
+
+export async function applyPcIdNamesToArtboard({
+  call, artboard, names, propagate = [], sourceArtboard = "home-desktop",
+  sourceTrees, artboards,
+} = {}) {
+  if (!artboard) return { artboard, renamed: 0, matched: 0 };
+  const boards = artboards || payload(await call("get_basic_info", {})).artboards;
+  const source = findBoard(boards, sourceArtboard);
+  const board = findBoard(boards, artboard);
+  if (!board?.id) throw new Error(`No ${artboard} artboard exists in Paper`);
+  let trees = sourceTrees;
+  if (!trees && source?.id) {
+    const sourceSections = childrenOf(payload(await call("get_children", { nodeId: source.id })));
+    trees = {};
+    const walked = await mapChunk(sourceSections, 3, async (frame) => ({
+      frame,
+      tree: await walkPaperTree(call, frame.id),
+    }));
+    for (const { frame, tree } of walked) {
+      const meta = sectionMeta(frame.name);
+      if (meta.slug) trees[meta.slug] = { id: frame.id, name: frame.name, nodes: tree };
+    }
+  }
+  const targetSections = childrenOf(payload(await call("get_children", { nodeId: board.id })));
+  const walkedTargets = await mapChunk(targetSections, 3, async (targetSection) => ({
+    targetSection,
+    meta: sectionMeta(targetSection.name),
+    targetTree: await walkPaperTree(call, targetSection.id),
+  }));
+  const updates = [];
+  const seen = new Set();
+  const queue = (nodeId, name) => {
+    if (!nodeId || !name || seen.has(nodeId)) return;
+    seen.add(nodeId);
+    updates.push({ nodeId, name });
+  };
+  for (const { meta, targetTree } of walkedTargets) {
+    const byPath = new Map(targetTree.map((node) => [node.treePath, node]));
+    const byName = new Map();
+    for (const node of targetTree) {
+      const current = String(node.name || "").trim();
+      if (current.startsWith("pc-") && !byName.has(current)) byName.set(current, node);
+    }
+    const sourceTree = sourceTreeFor(trees, meta)?.nodes || [];
+    for (const node of sourceTree) {
+      const name = String(node.name || "").trim();
+      if (!isSemanticName(name)) continue;
+      const hit = byPath.get(node.treePath);
+      if (!hit || hit.name === name) continue;
+      const current = String(hit.name || "").trim();
+      if (current.startsWith("pc-") || !isSemanticName(current)) queue(hit.id, name);
+    }
+    for (const row of propagate) {
+      if (row.slug && meta.slug && row.slug !== meta.slug) continue;
+      if (row.sectionId && meta.id && row.sectionId !== meta.id) continue;
+      const hit = (row.from && byName.get(row.from))
+        || (row.treePath && byPath.get(row.treePath));
+      if (hit) queue(hit.id, row.to);
+    }
+    if (names?.get) {
+      for (const node of targetTree) {
+        const current = String(node.name || "").trim();
+        if (!current.startsWith("pc-")) continue;
+        const next = names.get(`${meta.id}::${current}`)
+          || names.get(`${meta.slug}::${current}`);
+        if (next && next !== current) queue(node.id, next);
+      }
+    }
+  }
+  if (updates.length) {
+    await call("rename_nodes", { updates });
+    try { await call("finish_working_on_nodes", {}); } catch { /* optional Paper cleanup */ }
+  }
+  return { artboard, renamed: updates.length, matched: updates.length };
 }

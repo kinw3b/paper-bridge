@@ -31,7 +31,7 @@ const STAGES = [
     id: "tags",
     short: "TAGS",
     title: "Tags",
-    copy: "Scan names Paper layers. Done writes the receipt and pings the pipeline agent.",
+    copy: "Scan names Paper layers. Done writes the receipt so you can ask your agent to continue.",
   },
 ];
 

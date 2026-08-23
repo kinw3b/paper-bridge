@@ -42,11 +42,7 @@
     "padding-top", "padding-right", "padding-bottom", "padding-left", "margin-top",
     "margin-right", "margin-bottom", "margin-left", "overflow", "opacity", "visibility",
     "background-color", "background-image", "background-size", "background-position",
-    "background-repeat", "border-top-width", "border-right-width", "border-bottom-width",
-    "border-left-width", "border-top-style", "border-right-style", "border-bottom-style",
-    "border-left-style", "border-top-color", "border-right-color", "border-bottom-color",
-    "border-left-color", "border-radius", "outline-width", "outline-style", "outline-color",
-    "outline-offset", "box-shadow", "color", "font-family", "font-size",
+    "background-repeat", "border-radius", "outline-offset", "box-shadow", "color", "font-family", "font-size",
     "font-style", "font-weight", "letter-spacing", "line-height", "text-align",
     "text-decoration", "text-transform", "white-space", "object-fit", "object-position",
     "transform", "transform-origin", "filter", "clip-path"
@@ -148,6 +144,34 @@
     return cloneInline(referenced, budget);
   }
 
+  function paintDeclarations(computed) {
+    const declarations = [];
+    const sides = ["top", "right", "bottom", "left"];
+    const borders = sides.map((side) => ({
+      side,
+      width: computed.getPropertyValue(`border-${side}-width`),
+      style: computed.getPropertyValue(`border-${side}-style`),
+      color: computed.getPropertyValue(`border-${side}-color`),
+    })).filter((border) => Number.parseFloat(border.width) > 0
+      && border.style && border.style !== "none" && border.style !== "hidden");
+    if (borders.length === 4 && borders.every((border) => border.width === borders[0].width
+      && border.style === borders[0].style && border.color === borders[0].color)) {
+      // Paper reliably imports `border`, unlike individual border edge properties.
+      declarations.push(`border:${borders[0].width} ${borders[0].style} ${borders[0].color}`);
+    } else {
+      for (const border of borders) {
+        declarations.push(`border-${border.side}:${border.width} ${border.style} ${border.color}`);
+      }
+    }
+    const outlineWidth = computed.getPropertyValue("outline-width");
+    const outlineStyle = computed.getPropertyValue("outline-style");
+    const outlineColor = computed.getPropertyValue("outline-color");
+    if (Number.parseFloat(outlineWidth) > 0 && outlineStyle && outlineStyle !== "none" && outlineStyle !== "hidden") {
+      declarations.push(`outline:${outlineWidth} ${outlineStyle} ${outlineColor}`);
+    }
+    return declarations;
+  }
+
   function cloneInline(source, budget) {
     if (!source || budget.count >= 520 || budget.chars >= 120000) return null;
     if (source.nodeType === Node.TEXT_NODE) {
@@ -181,6 +205,7 @@
       }
       declarations.push(`${property}:${value}`);
     }
+    declarations.push(...paintDeclarations(computed));
     clone.setAttribute("style", declarations.join(";"));
     for (const child of source.childNodes) {
       const next = cloneInline(child, budget);

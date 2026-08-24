@@ -1,6 +1,7 @@
 (() => {
   if (window.__PAPER_CAPTURE_EXTENSION__) return;
   if (!globalThis.PaperCaptureNaming?.componentName
+    || !globalThis.PaperCaptureTargeting?.interactiveRoot
     || !globalThis.PaperCaptureTargeting?.targetFor
     || !globalThis.PaperCaptureNavBreakpoints
     || !globalThis.PaperCaptureSections
@@ -59,12 +60,16 @@
     "width", "height"
   ]);
 
-  function visible(element) {
+  function layoutPresent(element) {
     if (!(element instanceof Element)) return false;
     const rect = element.getBoundingClientRect();
     const style = getComputedStyle(element);
     return rect.width > 2 && rect.height > 2 && style.display !== "none"
-      && style.visibility !== "hidden" && Number(style.opacity) > 0;
+      && style.visibility !== "hidden";
+  }
+
+  function visible(element) {
+    return layoutPresent(element) && Number(getComputedStyle(element).opacity) > 0;
   }
 
   function textOf(element) {
@@ -123,7 +128,7 @@
   }
 
   const { componentName } = globalThis.PaperCaptureNaming;
-  const { targetFor } = globalThis.PaperCaptureTargeting;
+  const { interactiveRoot, targetFor } = globalThis.PaperCaptureTargeting;
   const { fingerprintNav, pickNavCandidate } = globalThis.PaperCaptureNavBreakpoints;
   const tagsApi = globalThis.PaperCaptureTags;
 
@@ -253,18 +258,55 @@
   }
 
   function paintedCta(element) {
-    if (!visible(element)) return false;
+    if (!layoutPresent(element)) return false;
     const nodes = [element, ...element.querySelectorAll("div,span,p,button,a")].slice(0, 16);
     return nodes.some((node) => {
-      if (!visible(node)) return false;
+      if (!layoutPresent(node)) return false;
       const style = getComputedStyle(node);
       const background = style.backgroundColor;
       const paintedBackground = background && !/rgba?\(0,\s*0,\s*0(?:,\s*0)?\)|transparent/i.test(background);
       const paintedImage = Boolean(style.backgroundImage && style.backgroundImage !== "none");
       const paintedBorder = ["Top", "Right", "Bottom", "Left"].some((side) =>
         Number.parseFloat(style[`border${side}Width`] || "0") > 0);
-      return paintedBackground || paintedImage || paintedBorder;
+      const paintedShadow = Boolean(style.boxShadow && style.boxShadow !== "none");
+      return paintedBackground || paintedImage || paintedBorder || paintedShadow;
     });
+  }
+
+  function pillCta(element) {
+    if (!layoutPresent(element)) return false;
+    const rect = element.getBoundingClientRect();
+    const style = getComputedStyle(element);
+    const radius = Math.max(
+      Number.parseFloat(style.borderTopLeftRadius) || 0,
+      Number.parseFloat(style.borderBottomLeftRadius) || 0,
+    );
+    return radius >= 8 && rect.height >= 32 && rect.height <= 88 && rect.width >= 72 && rect.width <= 520;
+  }
+
+  function tooLargeForHover(element) {
+    const rect = element.getBoundingClientRect();
+    if (rect.width > 720 || rect.height > 260) return true;
+    return tooLargeForNavbar(element);
+  }
+
+  function logoOrImageLink(element) {
+    const words = textOf(element).split(/\s+/).filter(Boolean).length;
+    const media = element.matches("img,svg") || element.querySelector("img,svg");
+    return Boolean(media && words <= 1);
+  }
+
+  function inNavChrome(element) {
+    return Boolean(element.closest("nav, [role='navigation'], [data-framer-name*='Nav']:not([data-framer-name*='Hero'])"));
+  }
+
+  function hoverCta(element) {
+    if (!layoutPresent(element) || tooLargeForHover(element) || logoOrImageLink(element)) return false;
+    if (element.matches("button, [role='button'], input[type='submit']")) return true;
+    if (pillCta(element) || paintedCta(element)) return true;
+    const rect = element.getBoundingClientRect();
+    const words = textOf(element).split(/\s+/).filter(Boolean).length;
+    return !inNavChrome(element) && words > 0 && words <= 8 && rect.height >= 24 && rect.width >= 48;
   }
 
   function tinyMark(node) {
@@ -411,6 +453,7 @@
         alt: element.getAttribute("alt") || "",
         href: element instanceof HTMLAnchorElement ? element.href : "",
         src: element instanceof HTMLImageElement ? element.currentSrc || element.src : "",
+        role: element.getAttribute("role") || "",
         pcId: extras.pcId || (path ? tagsApi.pcIdFor(sectionId, path) : undefined),
         path,
         x: Math.round(data.rect.x + scrollX),
@@ -424,7 +467,9 @@
   }
 
   function semanticElements() {
-    const list = document.querySelectorAll("h1,h2,h3,h4,h5,h6,p,ul,ol,img,a,button,form");
+    const list = document.querySelectorAll(
+      "h1,h2,h3,h4,h5,h6,p,ul,ol,li,img,a,button,form,label,header,nav,main,footer",
+    );
     return [...list].filter(visible);
   }
 
@@ -621,23 +666,46 @@
   }
 
   function autoHoverTargets() {
-    const seen = new Set();
-    const candidates = [];
+    // Walk every Paper band. Page-wide label×size + a first-8 cap kept only
+    // nav + hero and dropped later-section CTAs with the same label.
+    const seenEl = new Set();
+    const bySection = new Map();
     const list = document.querySelectorAll("button, a[href], [role='button'], input[type='submit']");
     for (const raw of list) {
       const element = interactiveRoot(raw);
-      if (!visible(element)) continue;
+      if (seenEl.has(element) || !hoverCta(element)) continue;
+      const section = sectionOf(element);
+      const sectionId = String(section.id || "01").padStart(2, "0");
+      if (sectionId === "00" && !pillCta(element) && !paintedCta(element)) continue;
       const rect = element.getBoundingClientRect();
       const signature = `${element.tagName}|${textOf(element)}|${Math.round(rect.height)}`;
-      const loop = element.closest("[role='list'], ul, ol, [data-framer-name*='Collection'], [data-framer-name*='Grid']");
-      if (loop && seen.has(signature)) continue;
-      if (seen.has(signature)) continue;
-      seen.add(signature);
-      const captureId = captureIdFor(element);
-      candidates.push({ captureId, label: componentName(element, { kind: state.captureKind }) });
-      if (candidates.length >= 12) break;
+      if (!bySection.has(sectionId)) bySection.set(sectionId, { seen: new Set(), items: [] });
+      const bucket = bySection.get(sectionId);
+      if (bucket.seen.has(signature)) continue;
+      bucket.seen.add(signature);
+      seenEl.add(element);
+      bucket.items.push({
+        captureId: captureIdFor(element),
+        label: componentName(element, { kind: state.captureKind }),
+        sectionId,
+      });
     }
-    return candidates;
+    return [...bySection.keys()].sort().flatMap((id) => bySection.get(id).items);
+  }
+
+  function pathFromRoot(root, element) {
+    const chain = [];
+    let node = element;
+    while (node && node !== root) {
+      const parent = node.parentElement;
+      if (!parent) return "";
+      const index = [...parent.children].indexOf(node);
+      if (index < 0) return "";
+      chain.unshift(index);
+      node = parent;
+    }
+    if (node !== root) return "";
+    return chain.length ? `0.${chain.join(".")}` : "0";
   }
 
   function semanticNodes() {
@@ -646,7 +714,9 @@
     const seen = new Set();
     const nodes = [];
     for (const section of roots) {
-      for (const row of tagsApi.walkLayerIds(section.root, section.id)) {
+      for (const row of tagsApi.walkLayerIds(section.root, section.id, {
+        semanticTags: tagsApi.BUILD_TAGS || tagsApi.SEMANTIC_TAGS,
+      })) {
         if (!visible(row.element) || seen.has(row.element)) continue;
         seen.add(row.element);
         nodes.push(semanticData(row.element, {
@@ -659,7 +729,14 @@
     }
     for (const element of semanticElements()) {
       if (seen.has(element)) continue;
-      nodes.push(semanticData(element).semantic);
+      const owner = roots.find((section) => section.root.contains(element) || section.root === element);
+      const path = owner ? pathFromRoot(owner.root, element) : "";
+      nodes.push(semanticData(element, owner && path ? {
+        pcId: tagsApi.pcIdFor(owner.id, path),
+        path,
+        sectionId: owner.id,
+        sectionLabel: owner.label,
+      } : {}).semantic);
     }
     return nodes;
   }
@@ -696,12 +773,16 @@
     if (message.type === "HC_PREPARE_TARGET") {
       const element = state.selected.get(message.captureId)
         || document.querySelector(`[data-paper-capture-id="${CSS.escape(message.captureId)}"]`);
-      if (!element || !visible(element)) {
+      if (!element?.isConnected) {
         sendResponse({ ok: false, error: "Target disappeared from the page" });
         return false;
       }
       element.scrollIntoView({ block: "center", inline: "center", behavior: "instant" });
       const rect = element.getBoundingClientRect();
+      if (rect.width <= 2 || rect.height <= 2) {
+        sendResponse({ ok: false, error: "Target disappeared from the page" });
+        return false;
+      }
       sendResponse({
         ok: true,
         point: { x: Math.round(rect.left + rect.width / 2), y: Math.round(rect.top + rect.height / 2) },

@@ -173,9 +173,13 @@ async function autoHover(tabId) {
   const listed = await tabSend(tabId, { type: "HC_AUTO_TARGETS", mode: "hover" });
   const targets = listed?.targets || [];
   const captures = [];
-  for (const target of targets.slice(0, 8)) {
-    const result = await hoverPair(tabId, target.captureId);
-    if (result.ok) captures.push(result.capture);
+  for (const target of targets.slice(0, 48)) {
+    try {
+      const result = await hoverPair(tabId, target.captureId);
+      if (result.ok) captures.push(result.capture);
+    } catch {
+      // Keep walking later sections when one control fails to serialize.
+    }
   }
   return { ok: true, captures, scanned: targets.length };
 }

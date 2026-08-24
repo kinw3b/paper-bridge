@@ -3,9 +3,9 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { applyPcIdNamesToArtboard, applySemanticsToPaper, pcIdNames, siblingHomeArtboards } from "./semantics.mjs";
+import { enrichLayerIds } from "./semantics.mjs";
 
-const HOST_VERSION = "1.2.29";
+const HOST_VERSION = "1.2.30";
 const BOARD_NAMES = ["Navigation", "Hover States", "Components"];
 const MAX_MESSAGE_BYTES = 8 * 1024 * 1024;
 const MAX_HTML_BYTES = 220_000;
@@ -14,7 +14,6 @@ let input = Buffer.alloc(0);
 let config = null;
 let mcpSessionId = null;
 let mcpConnected = false;
-let lastTagApply = null;
 
 function send(message) {
   const payload = Buffer.from(JSON.stringify(message));
@@ -127,12 +126,35 @@ function readJsonFile(file) {
   }
 }
 
-function loadLayerIds(projectRoot) {
-  return readJsonFile(path.join(projectRoot, "capture", "home-desktop", "layer-ids.json"));
+function layerIdsPath(projectRoot) {
+  return path.join(projectRoot, "capture", "home-desktop", "layer-ids.json");
 }
 
-function loadPaperLayerIds(projectRoot) {
-  return readJsonFile(path.join(projectRoot, "capture", "home-desktop", "paper-layer-ids.json"));
+function loadLayerIds(projectRoot) {
+  return readJsonFile(layerIdsPath(projectRoot));
+}
+
+function writeEnrichedLayerIds(projectRoot, take, nodes) {
+  const current = loadLayerIds(projectRoot);
+  if (!current?.ids) {
+    return { available: 0, retagged: 0, filled: 0, added: 0, promoted: 0, validated: 0 };
+  }
+  const result = enrichLayerIds(current, nodes);
+  writeJson(layerIdsPath(projectRoot), result.payload);
+  const report = {
+    generatedFrom: "paper-capture-extension/layer-ids-enrich",
+    capturedAt: new Date().toISOString(),
+    url: take.url || config.sourceUrl,
+    available: Object.keys(current.ids).length,
+    total: result.payload.total,
+    retagged: result.retagged,
+    filled: result.filled,
+    added: result.added,
+    promoted: result.promoted,
+    validated: result.validated,
+  };
+  writeJson(path.join(projectRoot, "qa", "layer-ids-enrich.json"), report);
+  return report;
 }
 
 function loadPaperSections(projectRoot) {
@@ -393,7 +415,7 @@ function persistTakeArtifacts(take) {
   const suffix = String(take.id || "").slice(-6).replace(/[^a-z0-9]/gi, "") || "take";
   const base = `${String(take.sectionId || "00").padStart(2, "0")}-${slug(take.label, take.kind)}-${suffix}`;
   if (take.mode === "tags") {
-    // APPLY_SEMANTICS writes the census and mutates home-desktop directly.
+    // APPLY_SEMANTICS writes the census and patches layer-ids.json. Paper layers stay as-is.
   } else if (take.defaultHtml || take.hoverHtml) {
     fs.writeFileSync(path.join(folder, `${base}--default.html`), `${safeTakeHtml(take.defaultHtml || take.html)}\n`, "utf8");
     if (take.hoverHtml) fs.writeFileSync(path.join(folder, `${base}--state-2.html`), `${safeTakeHtml(take.hoverHtml)}\n`, "utf8");
@@ -472,52 +494,50 @@ function writeSemantics(take) {
   return doc;
 }
 
-async function applySemanticTake(take) {
-  if (!take?.id || take.mode !== "tags") throw new Error("Semantic scan payload is invalid");
-  persistTakeArtifacts(take);
-  const doc = writeSemantics(take);
-  const layerIds = loadLayerIds(config.projectRoot);
-  const paperLayerIds = loadPaperLayerIds(config.projectRoot);
-  const result = await applySemanticsToPaper({
-    call: paperCall,
-    doc,
-    artboard: "home-desktop",
-    paperLayerIds,
-  });
-  const names = pcIdNames(doc);
-  const info = mcpPayload(await paperCall("get_basic_info", {}));
+function censusByTag(nodes) {
   const byTag = {};
-  for (const update of result.updates || []) {
-    const tag = String(update.name || "").split("·")[0].trim().toLowerCase();
+  for (const node of nodes) {
+    const tag = String(node?.tag || "").trim().toLowerCase();
     if (!tag) continue;
     byTag[tag] = (byTag[tag] || 0) + 1;
   }
-  const tagged = semanticList(take).filter((node) => node.pcId).length;
+  return byTag;
+}
+
+async function applySemanticTake(take) {
+  if (!take?.id || take.mode !== "tags") throw new Error("Semantic scan payload is invalid");
+  persistTakeArtifacts(take);
+  const nodes = allSemanticNodes(take);
+  const doc = writeSemantics(take);
+  const layerIdsEnrich = writeEnrichedLayerIds(config.projectRoot, take, nodes);
+  const layerIds = loadLayerIds(config.projectRoot);
+  const tagged = nodes.filter((node) => node.pcId).length;
   const receipt = {
     takeId: take.id,
-    board: "home-desktop",
+    board: "layer-ids.json",
     semantic: true,
-    scanned: result.scanned,
-    sourceSections: result.sourceSections,
-    missingSections: result.missingSections,
-    matched: result.matched,
-    renamed: result.renamed,
-    byTag,
+    scanned: nodes.length,
+    sourceSections: (doc.sections || []).length,
+    missingSections: [],
+    matched: Number(layerIdsEnrich.validated || 0)
+      + Number(layerIdsEnrich.retagged || 0)
+      + Number(layerIdsEnrich.promoted || 0)
+      + Number(layerIdsEnrich.added || 0),
+    renamed: 0,
+    byTag: censusByTag(nodes),
     breakpoints: [],
-    pendingBreakpoints: siblingHomeArtboards(info.artboards),
+    pendingBreakpoints: [],
     layerIds: {
       available: Object.keys(layerIds?.ids || {}).length,
       tagged,
-      matched: result.matchedByLayerId || 0,
+      matched: Number(layerIdsEnrich.validated || 0) + Number(layerIdsEnrich.retagged || 0),
+      retagged: layerIdsEnrich.retagged || 0,
+      filled: layerIdsEnrich.filled || 0,
+      added: layerIdsEnrich.added || 0,
+      promoted: layerIdsEnrich.promoted || 0,
+      validated: layerIdsEnrich.validated || 0,
     },
     addedAt: new Date().toISOString(),
-  };
-  lastTagApply = {
-    takeId: take.id,
-    names: Object.fromEntries(names),
-    propagate: result.propagate || [],
-    sectionTrees: result.sectionTrees || {},
-    desktopRenamed: result.renamed,
   };
   const session = sessionState();
   session.receipts[take.id] = receipt;
@@ -527,30 +547,6 @@ async function applySemanticTake(take) {
   else session.takes.push(metadata);
   saveSession(session);
   return receipt;
-}
-
-async function applyTagBreakpoint(artboard) {
-  if (!artboard) throw new Error("Breakpoint artboard is missing");
-  if (!lastTagApply) throw new Error("Scan desktop tags first");
-  const info = mcpPayload(await paperCall("get_basic_info", {}));
-  const row = await applyPcIdNamesToArtboard({
-    call: paperCall,
-    artboard,
-    artboards: info.artboards,
-    names: new Map(Object.entries(lastTagApply.names || {})),
-    propagate: lastTagApply.propagate || [],
-    sourceArtboard: "home-desktop",
-    sourceTrees: lastTagApply.sectionTrees,
-  });
-  const session = sessionState();
-  const receipt = session.receipts[lastTagApply.takeId];
-  if (receipt) {
-    receipt.breakpoints = [...(receipt.breakpoints || []).filter((item) => item.artboard !== artboard), row];
-    receipt.renamed = Number(lastTagApply.desktopRenamed || 0)
-      + receipt.breakpoints.reduce((count, item) => count + Number(item.renamed || 0), 0);
-    saveSession(session);
-  }
-  return row;
 }
 
 async function commitTake(take) {
@@ -656,8 +652,7 @@ async function handle(message) {
     return { receipt: await applySemanticTake(message.take) };
   }
   if (message.type === "APPLY_TAG_BREAKPOINT") {
-    if (!config) throw new Error("Start the capture session first");
-    return { receipt: await applyTagBreakpoint(message.artboard) };
+    return { receipt: { artboard: message.artboard, renamed: 0, skipped: true } };
   }
   if (message.type === "COMPLETE_SESSION") return { done: completeSession(message.summary) };
   throw new Error(`Unknown bridge message: ${message.type}`);

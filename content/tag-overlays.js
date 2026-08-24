@@ -8,7 +8,13 @@
     "META", "PARAM", "SOURCE", "TRACK", "WBR",
   ]);
   const SEMANTIC_TAGS = new Set([
-    "H1", "H2", "H3", "H4", "H5", "H6", "P", "UL", "OL", "IMG", "A", "BUTTON", "FORM",
+    "H1", "H2", "H3", "H4", "H5", "H6", "P", "UL", "OL", "LI", "IMG", "A", "BUTTON", "FORM", "LABEL",
+    "HEADER", "NAV", "MAIN", "FOOTER",
+  ]);
+  // Overlay stays quieter; the census still walks landmarks 2.2.a can retag.
+  const BUILD_TAGS = new Set([
+    ...SEMANTIC_TAGS,
+    "SECTION", "ARTICLE", "ASIDE",
   ]);
   const DESKTOP_WIDTH = 1600;
 
@@ -109,6 +115,7 @@
   globalThis.PaperCaptureTags = {
     VOID_TAGS,
     SEMANTIC_TAGS,
+    BUILD_TAGS,
     DESKTOP_WIDTH,
     isToolChrome,
     canAttach,

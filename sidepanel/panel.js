@@ -31,7 +31,7 @@ const STAGES = [
     id: "tags",
     short: "TAGS",
     title: "Tags",
-    copy: "Scan names Paper layers. Done writes the receipt so you can ask your agent to continue.",
+    copy: "Scan writes live tags into layer-ids.json for the 2.2.a build. Paper layers stay unnamed.",
   },
 ];
 
@@ -67,9 +67,9 @@ let scanPhase = "";
 const SCAN_PHASES = {
   locking: { title: "Locking desktop", help: "Holding the tab at 1600.", button: "Locking…" },
   scanning: { title: "Scanning page", help: "Reading live outlines…", button: "Scanning…" },
-  desktop: { title: "Desktop tags", help: "Naming home-desktop layers…", button: "Desktop…" },
-  tablet: { title: "Tablet tags", help: "Copying desktop names to tablet…", button: "Tablet…" },
-  mobile: { title: "Mobile tags", help: "Copying desktop names to mobile…", button: "Mobile…" },
+  desktop: { title: "Desktop tags", help: "Writing layer-ids.json…", button: "Desktop…" },
+  tablet: { title: "Tablet tags", help: "JSON only · desktop sidecar", button: "Tablet…" },
+  mobile: { title: "Mobile tags", help: "JSON only · desktop sidecar", button: "Mobile…" },
 };
 
 const TAG_BREAKS = ["desktop", "tablet", "mobile"];
@@ -172,7 +172,7 @@ function nativeRequest(type, payload = {}) {
       reject(new Error(type === "COMMIT_TAKE"
         ? "Paper did not acknowledge this take within 130 seconds"
         : type === "APPLY_SEMANTICS" || type === "APPLY_TAG_BREAKPOINT"
-          ? "This breakpoint is still naming Paper layers. Scan again if a row stayed on Naming."
+          ? "Tags is still writing layer-ids.json. Scan again if it did not finish."
         : "The local bridge timed out"));
     }, type === "COMMIT_TAKE" ? 130000
       : type === "APPLY_SEMANTICS" || type === "APPLY_TAG_BREAKPOINT" ? 120000
@@ -340,7 +340,7 @@ function renderStage() {
       : ui.autoMode.checked ? "Auto mode ready" : "Ready to record";
   ui.recordHelp.textContent = phase ? phase.help
     : item.id === "tags"
-    ? "Scan names matching Paper layers."
+    ? "Scan writes live tags into layer-ids.json."
     : pairDraft ? "Open or change it, then capture state 2."
       : item.id === "nav" && navKind === "dropdown"
         ? "Hover a menu open, then click the open dropdown once."
@@ -421,39 +421,16 @@ function setTagBreak(id, status, extra = {}) {
   renderTagProgress();
 }
 
-function artboardKind(name) {
-  const value = String(name || "").toLowerCase();
-  if (value.includes("390") || value.includes("mobile")) return "mobile";
-  if (value.includes("768") || value.includes("tablet")) return "tablet";
-  if (value.includes("desktop")) return "desktop";
-  return "";
-}
-
-function pendingTagBreaks(artboards) {
-  const unused = ["tablet", "mobile"];
-  const rows = [];
-  for (const artboard of artboards || []) {
-    let id = artboardKind(artboard);
-    if (id === "desktop") continue;
-    if (!unused.includes(id)) id = unused[0] || "";
-    if (!id) continue;
-    unused.splice(unused.indexOf(id), 1);
-    rows.push({ id, artboard });
-  }
-  return rows;
-}
-
 function tagBreakNote(id, row) {
-  if (row.status === "capturing" || row.status === "confirming") return "Naming…";
+  if (row.status === "capturing" || row.status === "confirming") return "Writing JSON…";
   if (row.status === "failed") return row.error || "Retry needed";
-  if (row.status === "skipped") return "No artboard";
+  if (row.status === "skipped") return "JSON only";
   if (row.status !== "confirmed") return "Waiting";
   if (id === "desktop") {
     const matched = Number(row.matched || 0);
-    return matched ? `${matched} matched` : "Named";
+    return matched ? `${matched} joined` : "Wrote sidecar";
   }
-  const renamed = Number(row.renamed || 0);
-  return renamed ? `${renamed} tagged` : "Named";
+  return "JSON only";
 }
 
 function renderTagProgress() {
@@ -471,13 +448,11 @@ function renderTagProgress() {
   ui.tagProgress.classList.toggle("complete", confirmed === 3);
   ui.tagProgress.classList.toggle("failed", failed);
   ui.tagProgressLabel.textContent = confirmed === 3
-    ? "Tags applied across breakpoints"
+    ? "layer-ids.json updated"
     : failed && !working ? "Tags need attention"
       : scanPhase === "locking" ? "Locking desktop · 1600"
       : scanPhase === "scanning" ? "Scanning page"
-      : scanPhase === "desktop" ? "Naming desktop"
-      : scanPhase === "tablet" ? "Naming tablet"
-      : scanPhase === "mobile" ? "Naming mobile"
+      : scanPhase === "desktop" ? "Writing layer-ids"
       : locked ? "Desktop locked · 1600"
         : desktopViewport ? `Need 1600 · now ${desktopViewport.width}`
           : "Locking to 1600…";
@@ -485,14 +460,12 @@ function renderTagProgress() {
   ui.tagProgressBar?.setAttribute("aria-valuenow", String(confirmed));
   if (ui.tagProgressFill) ui.tagProgressFill.style.width = `${(confirmed / 3) * 100}%`;
   ui.tagProgressHelp.textContent = confirmed === 3
-    ? "Desktop, tablet, and mobile layers are named."
-    : failed && !working ? "Retry Scan to finish the failed breakpoint."
+    ? "Live tags are in layer-ids.json. Paper layers were not renamed."
+    : failed && !working ? "Retry Scan to finish the sidecar write."
       : scanPhase === "locking" ? "Holding the tab at 1600…"
       : scanPhase === "scanning" ? "Reading live outlines…"
-      : scanPhase === "desktop" ? "Naming matching home-desktop layers…"
-      : scanPhase === "tablet" ? "Copying desktop tags to tablet…"
-      : scanPhase === "mobile" ? "Copying desktop tags to mobile…"
-      : "Scan names desktop, then tablet, then mobile.";
+      : scanPhase === "desktop" ? "Patching capture/home-desktop/layer-ids.json…"
+      : "Scan writes tags into the desktop sidecar. Tablet and mobile stay JSON-only.";
   ui.tagProgress.querySelectorAll("[data-breakpoint]").forEach((node) => {
     const id = node.dataset.breakpoint;
     const row = tagBreakPhases.get(id) || { status: "waiting" };
@@ -730,7 +703,9 @@ async function toggleRecord() {
 async function runAuto() {
   ui.recordButton.disabled = true;
   ui.captureError.textContent = "";
-  setActivity("Auto is scanning visible candidates…", true);
+  setActivity(stage().id === "hover"
+    ? "Auto is walking every section for hover pairs…"
+    : "Auto is scanning visible candidates…", true);
   try {
     if (stage().id === "hover") {
       const tab = await resolveSourceTab();
@@ -739,6 +714,8 @@ async function runAuto() {
       if (!result?.ok) throw new Error(result?.error || "Auto Hover failed");
       for (const capture of result.captures || []) await commitTake(capture);
       if (!result.captures?.length) throw new Error("Auto did not find a safe hover candidate");
+      const sections = new Set((result.captures || []).map((take) => take.sectionId).filter(Boolean));
+      setActivity(`✓ ${result.captures.length} hover pairs across ${sections.size || 1} sections`);
       return;
     }
     if (stage().id === "tags") {
@@ -766,27 +743,13 @@ async function runAuto() {
         }
         const receipt = applied.receipt || {};
         setTagBreak("desktop", "confirmed", {
-          matched: Number(receipt.matched || receipt.layerIds?.matched || 0),
-          renamed: Number(receipt.renamed || 0),
+          matched: Number(receipt.layerIds?.validated || receipt.matched || 0),
+          renamed: 0,
         });
-        const queued = pendingTagBreaks(receipt.pendingBreakpoints);
-        const used = new Set(queued.map((row) => row.id));
         for (const id of TAG_BREAKS) {
-          if (id !== "desktop" && !used.has(id)) setTagBreak(id, "skipped");
+          if (id !== "desktop") setTagBreak(id, "skipped");
         }
         receipt.breakpoints = [];
-        for (const row of queued) {
-          setTagBreak(row.id, "capturing");
-          setScanPhase(row.id);
-          try {
-            const next = await nativeRequest("APPLY_TAG_BREAKPOINT", { artboard: row.artboard });
-            const named = next.receipt || next;
-            receipt.breakpoints.push({ ...named, artboard: named.artboard || row.artboard });
-            setTagBreak(row.id, "confirmed", { renamed: Number(named.renamed || 0) });
-          } catch (error) {
-            setTagBreak(row.id, "failed", { error: error.message });
-          }
-        }
         for (let index = takes.length - 1; index >= 0; index -= 1) {
           if (takes[index].stage === "tags") takes.splice(index, 1);
         }
@@ -802,8 +765,11 @@ async function runAuto() {
           ? ` · missing Paper sections ${receipt.missingSections.join(", ")}` : "";
         const layer = receipt.layerIds
           ? ` · ${receipt.layerIds.tagged} layer-ids · ${receipt.layerIds.matched} pc-id hits`
+            + (receipt.layerIds.retagged || receipt.layerIds.added
+              ? ` · ${receipt.layerIds.retagged || 0} tags patched · ${receipt.layerIds.added || 0} added`
+              : "")
           : "";
-        setActivity(`✓ ${receipt.scanned} candidates across ${receipt.sourceSections} sections · ${receipt.matched} matched · ${receipt.renamed} renamed${layer}${missing}`);
+        setActivity(`✓ ${receipt.scanned} candidates across ${receipt.sourceSections} sections · ${receipt.matched} joined${layer}${missing}`);
       } finally {
         pending -= 1;
         setScanPhase("");
@@ -874,7 +840,7 @@ function tagReport(capture, receipt) {
     status: "success",
     board: "home-desktop",
     meta: `${total} tags`,
-    note: `${Number(receipt.renamed || 0)} tagged in Paper`,
+    note: `${Number(receipt.layerIds?.validated || receipt.matched || 0)} joined layer-ids`,
     semanticReceipt: receipt,
     layerIds: receipt.layerIds || capture.layerIds,
   }];
@@ -899,7 +865,7 @@ function tagReport(capture, receipt) {
       kind: "tag-tally",
       status: hits ? "success" : "idle",
       meta: `${count} found`,
-      note: hits ? `${hits} tagged` : "no Paper match",
+      note: hits ? `${hits} in sidecar` : "no layer-ids join",
     });
   }
   return rows;

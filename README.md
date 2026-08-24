@@ -2,7 +2,7 @@
 
 Chrome extension for the [web2html](https://web2html.com) pipeline.
 
-**This is not a standalone tool.** It is the Capture Tool used in step 1.3 of the web2html skill — the human pass that records navbar, dropdown, hover, component, and tag states from a live page into [Paper](https://paper.design). Use it with the skill, not on its own.
+**This is not a standalone tool.** It is the Capture Tool used in step 1.3 of the web2html skill — the human pass that records navbar, dropdown, hover, and component states from a live page into [Paper](https://paper.design). Session order is Nav → Hover → Multi → Single → Done. Tags come from 1.2 `layer-ids.json`; 2.2.a applies that map. Use it with the skill, not on its own.
 
 - Skill: [web2html.com](https://web2html.com) · [`npx github:kinw3b/web2html-skill`](https://github.com/kinw3b/web2html-skill)
 - Requires [Paper Desktop](https://paper.design/downloads) and an active web2html run

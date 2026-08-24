@@ -55,6 +55,59 @@ export const LANDMARK_TAGS = new Set([
   "header", "nav", "main", "footer", "section", "article", "aside",
 ]);
 export const GENERIC_TAGS = new Set(["div", "span", "i", "b", "strong", "em", "font", "u"]);
+export const STRONG_TAGS = new Set(["h1", "h2", "h3", "h4", "a", "img"]);
+const BLOCKED_DUMP_TAGS = new Set(["html", "body", "main"]);
+
+export function collectDumpPcIds(html = "") {
+  const ids = new Set();
+  const source = String(html || "");
+  for (const match of source.matchAll(/(?:layer-name|data-pc)="(pc-[^"]+)"/g)) ids.add(match[1]);
+  return ids;
+}
+
+export function parentPcId(pcId) {
+  const parsed = parsePcId(pcId);
+  const parts = censusPath(pcId).split(".").filter(Boolean);
+  if (parts.length <= 1) return "";
+  parts.pop();
+  const path = parts.join(".");
+  if (!path) return "";
+  if (parsed.sectionId) return `pc-${parsed.sectionId}-${path}`;
+  return path.startsWith("pc-") ? path : `pc-${path}`;
+}
+
+export function isSectionRootPcId(pcId) {
+  return /^pc-\d{2}-0$/.test(String(pcId || "").trim());
+}
+
+function dumpTagFor(ids, dumpTags, pcId) {
+  const row = ids?.[pcId];
+  return String(row?.tag || dumpTags?.[pcId] || "").toLowerCase();
+}
+
+export function promoteToDumpPcId(pcId, dumpIds, ids = {}, dumpTags = {}) {
+  const dump = dumpIds instanceof Set ? dumpIds : new Set(dumpIds || []);
+  const raw = String(pcId || "").trim();
+  if (!raw || !dump.size) return { pcId: raw, promoted: false };
+  if (dump.has(raw) && !isSectionRootPcId(raw) && !BLOCKED_DUMP_TAGS.has(dumpTagFor(ids, dumpTags, raw))) {
+    return { pcId: raw, promoted: false };
+  }
+  const sectionId = parsePcId(raw).sectionId;
+  let current = raw;
+  while (current && !dump.has(current)) {
+    const next = parentPcId(current);
+    if (!next) return { pcId: "", promoted: false };
+    if (isSectionRootPcId(next)) return { pcId: "", promoted: false };
+    if (sectionId && parsePcId(next).sectionId !== sectionId) return { pcId: "", promoted: false };
+    if (BLOCKED_DUMP_TAGS.has(dumpTagFor(ids, dumpTags, next))) return { pcId: "", promoted: false };
+    current = next;
+  }
+  if (!current || !dump.has(current)) return { pcId: "", promoted: false };
+  if (isSectionRootPcId(current) || BLOCKED_DUMP_TAGS.has(dumpTagFor(ids, dumpTags, current))) {
+    return { pcId: "", promoted: false };
+  }
+  return { pcId: current, promoted: current !== raw };
+}
 
 function cleanText(value, limit = 120) {
   return String(value || "").replace(/\s+/g, " ").trim().slice(0, limit);
@@ -129,83 +182,192 @@ function applyCensusFields(row, node) {
 function setLiveTag(row, tag) {
   const current = String(row.tag || "").toLowerCase();
   if (current === tag) return false;
+  if (STRONG_TAGS.has(current)) return false;
   if (!row.sourceTag) row.sourceTag = row.tag ?? null;
   row.tag = tag;
   row.enrichedFrom = "paper-capture-extension";
   return true;
 }
 
-export function enrichLayerIds(payload, nodes = []) {
-  if (!payload || typeof payload !== "object") {
-    return { payload: payload || null, retagged: 0, filled: 0, added: 0, promoted: 0, validated: 0 };
+function newSidecarRow(pcId, path, tag, node, payload, ids) {
+  return {
+    pcId,
+    path,
+    tag,
+    class: "",
+    classes: [],
+    role: node.role || "",
+    "data-framer-name": "",
+    text: cleanText(node.text || node.alt),
+    alt: node.alt || "",
+    href: node.href || "",
+    src: node.src || "",
+    pageX: node.x != null ? Number(node.x) : undefined,
+    pageY: node.y != null ? Number(node.y) : undefined,
+    w: node.w != null ? Number(node.w) : undefined,
+    h: node.h != null ? Number(node.h) : undefined,
+    section: sectionLabelFor({ ...payload, ids }, node),
+    enrichedFrom: "paper-capture-extension",
+  };
+}
+
+function receiptEntry(node, row, applyTo, paperId) {
+  const pcId = String(node?.pcId || row?.pcId || "").trim();
+  return {
+    pcId,
+    path: censusPath(pcId, node?.path || row?.path),
+    tag: String(row?.tag || node?.tag || "").toLowerCase(),
+    text: cleanText(node?.text || row?.text || ""),
+    href: node?.href || row?.href || "",
+    src: node?.src || row?.src || "",
+    alt: node?.alt || row?.alt || "",
+    section: row?.section || "",
+    paperId: paperId || "",
+    applyTo: applyTo || pcId,
+  };
+}
+
+export function resolveApplyTo(pcId, dumpIds, ids = {}, node = {}) {
+  const raw = String(pcId || "").trim();
+  const dump = dumpIds instanceof Set ? dumpIds : new Set(dumpIds || []);
+  if (!raw) return "";
+  if (!dump.size || dump.has(raw)) return raw;
+  const parent = parentPcId(raw);
+  if (!parent || isSectionRootPcId(parent)) return raw;
+  if (parsePcId(raw).sectionId && parsePcId(parent).sectionId !== parsePcId(raw).sectionId) return raw;
+  if (!dump.has(parent)) return raw;
+  const parentTag = dumpTagFor(ids, {}, parent);
+  if (BLOCKED_DUMP_TAGS.has(parentTag)) return raw;
+  const want = norm(node.text || node.alt || ids[raw]?.text);
+  const have = norm(ids[parent]?.text || ids[parent]?.alt);
+  if (want && have && want === have) return parent;
+  const tag = String(node.tag || ids[raw]?.tag || "").toLowerCase();
+  if (tag === "img" && GENERIC_TAGS.has(parentTag) && !have) return parent;
+  return raw;
+}
+
+function matchOrphanRow(ids, node, used) {
+  const tag = String(node?.tag || "").toLowerCase();
+  const sectionId = String(node?.sectionId || parsePcId(node?.pcId).sectionId || "").padStart(2, "0");
+  const text = norm(node?.text || node?.alt);
+  const src = String(node?.src || "").trim();
+  const href = String(node?.href || "").trim();
+  let best = null;
+  for (const [pcId, row] of Object.entries(ids)) {
+    if (used.has(pcId)) continue;
+    if (sectionId && sectionId !== "00" && parsePcId(pcId).sectionId !== sectionId) continue;
+    const rowTag = String(row.tag || "").toLowerCase();
+    if (rowTag !== tag && !GENERIC_TAGS.has(rowTag)) continue;
+    let score = 0;
+    if (src && String(row.src || "").trim() && src === String(row.src || "").trim()) score = rowTag === tag ? 4 : 2;
+    else if (text && norm(row.text || row.alt) === text) score = rowTag === tag ? 3 : 1;
+    else if (tag === "a" && href && String(row.href || "").trim() === href) score = rowTag === tag ? 2 : 1;
+    if (!score) continue;
+    if (!best || score > best.score) best = { pcId, row, score };
   }
+  return best;
+}
+
+function applyToRow(row, node, tag) {
+  const before = String(row.tag || "").toLowerCase();
+  let retagged = 0;
+  let validated = 0;
+  if (before === tag) validated = 1;
+  else if (setLiveTag(row, tag)) retagged = 1;
+  else validated = 1;
+  const filled = applyCensusFields(row, node).length ? 1 : 0;
+  return { retagged, validated, filled };
+}
+
+export function enrichLayerIds(payload, nodes = [], options = {}) {
+  if (!payload || typeof payload !== "object") {
+    return {
+      payload: payload || null, retagged: 0, filled: 0, added: 0, promoted: 0, validated: 0, ids: {},
+    };
+  }
+  const dumpIds = options.dumpIds instanceof Set ? options.dumpIds : new Set(options.dumpIds || []);
+  const paperByPc = paperIdMap(options.paperIds);
   const ids = payload.ids && typeof payload.ids === "object" ? { ...payload.ids } : {};
   const used = new Set();
+  const receiptIds = {};
+  const targets = {};
   let retagged = 0;
   let filled = 0;
   let added = 0;
   let promoted = 0;
-  let validated = 0;
 
   for (const node of nodes) {
-    const pcId = String(node?.pcId || "").trim();
+    let scanId = String(node?.pcId || "").trim();
     const tag = String(node?.tag || "").toLowerCase();
-    if (!pcId || (!CONTENT_TAGS.has(tag) && !LANDMARK_TAGS.has(tag))) continue;
-    const path = censusPath(pcId, node.path);
-    const exact = ids[pcId];
-
-    if (exact) {
-      const before = String(exact.tag || "").toLowerCase();
-      if (before !== tag && (GENERIC_TAGS.has(before) || CONTENT_TAGS.has(tag) || LANDMARK_TAGS.has(tag))) {
-        if (setLiveTag(exact, tag)) retagged += 1;
-      } else {
-        validated += 1;
-      }
-      if (applyCensusFields(exact, node).length) filled += 1;
-      used.add(pcId);
-      continue;
+    if (!scanId) {
+      const orphan = matchOrphanRow(ids, node, used);
+      if (!orphan) continue;
+      scanId = orphan.pcId;
     }
+    const applyTo = resolveApplyTo(scanId, dumpIds, ids, { ...node, pcId: scanId });
+    const path = censusPath(scanId, node.path);
+    const row = ids[scanId];
 
-    if (LANDMARK_TAGS.has(tag) && !CONTENT_TAGS.has(tag)) continue;
-
-    const descendant = closestDescendant(ids, path);
-    if (descendant && !used.has(descendant[0])) {
-      const [childId, child] = descendant;
-      const childTag = String(child.tag || "").toLowerCase();
-      const locked = CONTENT_TAGS.has(childTag) && !GENERIC_TAGS.has(childTag) && childTag !== tag
-        && !["p", "span", "div"].includes(childTag);
-      if (!locked && (GENERIC_TAGS.has(childTag) || childTag === "p" || childTag === tag)) {
-        if (setLiveTag(child, tag)) {
-          promoted += 1;
-          retagged += 1;
+    if (CONTENT_TAGS.has(tag) || LANDMARK_TAGS.has(tag)) {
+      if (row) {
+        const applied = applyToRow(row, node, tag);
+        retagged += applied.retagged;
+        filled += applied.filled;
+        used.add(scanId);
+      } else if (LANDMARK_TAGS.has(tag) && !CONTENT_TAGS.has(tag)) {
+        // Landmarks only patch an existing sidecar row.
+      } else if (!dumpIds.size) {
+        const descendant = closestDescendant(ids, path);
+        if (descendant && !used.has(descendant[0])) {
+          const [childId, child] = descendant;
+          const childTag = String(child.tag || "").toLowerCase();
+          const locked = STRONG_TAGS.has(childTag) && childTag !== tag;
+          if (!locked && (GENERIC_TAGS.has(childTag) || childTag === "p" || childTag === tag)) {
+            const applied = applyToRow(child, node, tag);
+            retagged += applied.retagged;
+            filled += applied.filled;
+            if (applied.retagged) promoted += 1;
+            used.add(childId);
+          } else {
+            ids[scanId] = newSidecarRow(scanId, path, tag, node, payload, ids);
+            added += 1;
+            used.add(scanId);
+          }
+        } else {
+          ids[scanId] = newSidecarRow(scanId, path, tag, node, payload, ids);
+          added += 1;
+          used.add(scanId);
         }
-        if (applyCensusFields(child, node).length) filled += 1;
-        used.add(childId);
-        continue;
+      } else if (dumpIds.has(scanId)) {
+        ids[scanId] = newSidecarRow(scanId, path, tag, node, payload, ids);
+        added += 1;
+        used.add(scanId);
       }
     }
 
-    ids[pcId] = {
-      pcId,
-      path,
-      tag,
-      class: "",
-      classes: [],
-      role: node.role || "",
-      "data-framer-name": "",
-      text: cleanText(node.text || node.alt),
-      alt: node.alt || "",
-      href: node.href || "",
-      src: node.src || "",
-      pageX: node.x != null ? Number(node.x) : undefined,
-      pageY: node.y != null ? Number(node.y) : undefined,
-      w: node.w != null ? Number(node.w) : undefined,
-      h: node.h != null ? Number(node.h) : undefined,
-      section: sectionLabelFor({ ...payload, ids }, node),
-      enrichedFrom: "paper-capture-extension",
-    };
-    added += 1;
-    used.add(pcId);
+    targets[scanId] = applyTo;
+  }
+
+  for (const [pcId, row] of Object.entries(ids)) {
+    const tag = String(row.tag || "").toLowerCase();
+    const applyTo = targets[pcId] || (
+      CONTENT_TAGS.has(tag) || LANDMARK_TAGS.has(tag)
+        ? resolveApplyTo(pcId, dumpIds, ids, row)
+        : pcId
+    );
+    const receipt = receiptEntry(row, row, applyTo, mappedId(paperByPc, pcId));
+    if (!receipt.section) receipt.section = row.section || "";
+    receiptIds[pcId] = receipt;
+    targets[pcId] = applyTo;
+  }
+  for (const node of nodes) {
+    const scanId = String(node?.pcId || "").trim();
+    if (!scanId || receiptIds[scanId]) continue;
+    const applyTo = resolveApplyTo(scanId, dumpIds, ids, node);
+    const receipt = receiptEntry(node, ids[scanId], applyTo, mappedId(paperByPc, scanId));
+    if (!receipt.section) receipt.section = sectionLabelFor({ ...payload, ids }, node);
+    receiptIds[scanId] = receipt;
+    targets[scanId] = applyTo;
   }
 
   const counts = new Map();
@@ -232,7 +394,14 @@ export function enrichLayerIds(payload, nodes = []) {
     filled,
     added,
     promoted,
-    validated,
+    validated: Object.values(receiptIds).filter((entry) => (
+      entry.pcId && (
+        CONTENT_TAGS.has(String(entry.tag || "").toLowerCase())
+        || LANDMARK_TAGS.has(String(entry.tag || "").toLowerCase())
+      )
+    )).length,
+    ids: receiptIds,
+    targets,
   };
 }
 

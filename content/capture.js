@@ -529,10 +529,24 @@
   }
 
   function sectionRootsForWalk() {
+    const paper = Array.isArray(state.paperSections) ? state.paperSections : [];
+    const fromSelectors = [];
+    for (const section of paper) {
+      const selector = String(section.selector || "").trim();
+      if (!selector) continue;
+      let root;
+      try { root = document.querySelector(selector); } catch { root = null; }
+      if (!root || !visible(root)) continue;
+      fromSelectors.push({
+        id: String(section.id || "").padStart(2, "0"),
+        label: section.slug || section.label || "",
+        root,
+      });
+    }
+    if (fromSelectors.length) return fromSelectors;
     const { chrome, bands } = globalThis.PaperCaptureSections.contentBands(semanticSectionRoots(), { scrollY });
     const roots = [];
     for (const node of chrome) roots.push({ id: "00", label: "header", root: node });
-    const paper = Array.isArray(state.paperSections) ? state.paperSections : [];
     bands.forEach((root, index) => {
       const mid = sectionTopOf(root) + Math.max(0, root.getBoundingClientRect().height) / 2;
       const hit = paper.length ? globalThis.PaperCaptureSections.matchCensus(mid, paper) : null;
@@ -567,9 +581,7 @@
     box.style.top = `${Math.round(rect.top)}px`;
     box.style.width = `${Math.round(rect.width)}px`;
     box.style.height = `${Math.round(rect.height)}px`;
-    chip.textContent = state.mode === "tags"
-      ? `<${target.tagName.toLowerCase()}> · ${textOf(target)}`
-      : `${state.captureKind} · ${target.tagName.toLowerCase()} · ${textOf(target)}`;
+    chip.textContent = `${state.captureKind} · ${target.tagName.toLowerCase()} · ${textOf(target)}`;
   }
 
   function setRecording(recording, mode = state.mode, captureKind = state.captureKind) {
@@ -581,8 +593,7 @@
     statusText.textContent = `Record · ${captureKind}`;
     document.documentElement.toggleAttribute("data-paper-capture-recording", state.recording);
     if (!state.recording) box.style.display = "none";
-    if (state.mode === "tags") showSemanticOverlays();
-    else clearSemanticOverlays();
+    clearSemanticOverlays();
   }
 
   window.addEventListener("scroll", layoutSemanticOverlays, { passive: true, capture: true });
@@ -646,9 +657,7 @@
       return;
     }
     try {
-      const capture = state.mode === "tags"
-        ? semanticData(target)
-        : { ...captureData(target), html: serialize(target) };
+      const capture = { ...captureData(target), html: serialize(target) };
       chrome.runtime.sendMessage({ type: "HC_CAPTURED", ok: true, capture }).catch(() => {});
     } catch (error) {
       chrome.runtime.sendMessage({ type: "HC_CAPTURED", ok: false, error: error.message }).catch(() => {});
@@ -757,11 +766,6 @@
       sendResponse({ ok: true });
       return false;
     }
-    if (message.type === "HC_SHOW_TAG_OUTLINES") {
-      state.mode = "tags";
-      sendResponse({ ok: true, count: showSemanticOverlays() });
-      return false;
-    }
     if (message.type === "HC_DEACTIVATE") {
       setRecording(false);
       clearSemanticOverlays();
@@ -855,34 +859,6 @@
       } catch (error) {
         sendResponse({ ok: false, error: error.message });
       }
-      return false;
-    }
-    if (message.type === "HC_AUTO_TAGS") {
-      showSemanticOverlays();
-      const nodes = semanticNodes();
-      for (const overlay of state.semanticOverlays.values()) overlay.classList.add("scanned");
-      sendResponse({
-        ok: true,
-        capture: {
-          id: `take-${Date.now()}-${++state.sequence}`,
-          mode: "tags",
-          kind: "tags-scan",
-          label: `Tags scan · ${nodes.length} nodes`,
-          url: location.href,
-          viewport: {
-            width: innerWidth,
-            height: innerHeight,
-            dpr: devicePixelRatio || 1,
-            contractWidth: tagsApi.DESKTOP_WIDTH,
-          },
-          semanticNodes: nodes,
-          layerIds: {
-            tagged: nodes.filter((node) => node.pcId).length,
-            scanned: nodes.length,
-          },
-          capturedAt: new Date().toISOString(),
-        },
-      });
       return false;
     }
     return false;

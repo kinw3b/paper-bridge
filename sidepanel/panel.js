@@ -4,37 +4,36 @@ const HOST_NAME = "com.kreativepro.paper_capture";
 
 const STAGES = [
   {
-    id: "nav",
-    short: "NAV",
-    title: "Navbar + Dropdowns",
-    copy: "Capture desktop Navbar once, then each open dropdown.",
+    id: "dropdown",
+    short: "DROPDOWN",
+    title: "Dropdowns",
+    copy: "Hover a menu open, then click the open dropdown once.",
+    mode: "dropdown",
+    kind: "dropdown",
   },
   {
-    id: "hover",
-    short: "HOVER",
-    title: "Hover",
-    copy: "Record one element for its default and hover states.",
+    id: "buttons",
+    short: "BUTTONS",
+    title: "Buttons",
+    copy: "Record one button for its default and hover states.",
+    mode: "hover",
+    kind: "hover",
   },
   {
-    id: "multi",
-    short: "MULTI",
-    title: "Multi-state",
-    copy: "Record state 1, change it, then record state 2.",
-  },
-  {
-    id: "single",
-    short: "SINGLE",
-    title: "Single",
+    id: "components",
+    short: "COMPONENTS",
+    title: "Components",
     copy: "Capture any exact element as one object. Done writes the session receipt.",
+    mode: "single",
+    kind: "single",
   },
 ];
 
 const ui = Object.fromEntries([
   "setup", "workspace", "complete", "connection", "paperFileId", "projectRoot", "paperEndpoint",
   "setupError", "startButton", "stageRail", "stepKicker", "stageTitle", "stageCopy", "autoMode",
-  "navKindPicker", "recordButton", "recordTitle", "recordHelp", "activity", "takes", "captureError",
-  "backButton", "continueButton", "doneButton",   "navProgress", "navProgressLabel", "navProgressCount",
-  "navProgressBar", "navProgressFill", "navProgressHelp",
+  "recordButton", "recordTitle", "recordHelp", "activity", "takes", "captureError",
+  "backButton", "continueButton", "doneButton",
 ].map((id) => [id, document.getElementById(id)]));
 
 let port = null;
@@ -43,16 +42,11 @@ let activeTab = null;
 let sourceTabId = null;
 let sourceUrl = "";
 let stageIndex = 0;
-let navKind = "navbar";
-let pairDraft = null;
 let recording = false;
 let pending = 0;
 const requests = new Map();
 const takes = [];
 const retryPayloads = new Map();
-const navCapturePhases = new Map([
-  ["desktop", "waiting"], ["tablet", "waiting"], ["mobile", "waiting"],
-]);
 let desktopViewport = null;
 
 function setConnection(online, text = online ? "Connected" : "Offline") {
@@ -233,12 +227,9 @@ function cleanSourceUrl(href) {
 
 function stage() { return STAGES[stageIndex]; }
 
-function currentKind() {
-  if (stage().id === "nav") return navKind;
-  if (stage().id === "multi") return "multi-state";
-  if (stage().id === "single") return "single";
-  return stage().id;
-}
+function captureMode() { return stage().mode; }
+
+function currentKind() { return stage().kind; }
 
 function renderStages() {
   ui.stageRail.innerHTML = "";
@@ -256,9 +247,6 @@ function renderStages() {
 function renderTakes() {
   ui.takes.innerHTML = "";
   const visible = takes.filter((take) => take.stage === stage().id);
-  if (stage().id === "nav") {
-    visible.sort((a, b) => (a.kind === "navbar") - (b.kind === "navbar"));
-  }
   for (const take of visible) {
     const row = document.createElement("div");
     row.className = `take ${take.status}`;
@@ -271,6 +259,7 @@ function renderTakes() {
     row.querySelector("p").textContent = take.note || (take.status === "success"
       ? `✓ added to Paper · ${take.board}`
       : take.status === "failed" ? take.error : "Sending to Paper…");
+    if (take.status === "failed" && take.error) row.querySelector("p").title = take.error;
     if (take.status === "failed" && retryPayloads.has(take.id)) {
       const retry = document.createElement("button");
       retry.className = "retry";
@@ -284,88 +273,34 @@ function renderTakes() {
 
 function renderStage() {
   const item = stage();
+  const last = item.id === "components";
   renderStages();
   ui.stepKicker.textContent = `STEP ${stageIndex + 1} OF ${STAGES.length}`;
   ui.stageTitle.textContent = item.title;
   ui.stageCopy.textContent = item.copy;
-  ui.navKindPicker.hidden = item.id !== "nav";
   ui.backButton.hidden = stageIndex === 0;
-  ui.continueButton.hidden = item.id === "single";
-  ui.doneButton.hidden = item.id !== "single";
-  const navbarConfirmed = navbarReceiptCount();
-  const navbarComplete = hasAllNavbarReceipts();
+  ui.continueButton.hidden = last;
+  ui.doneButton.hidden = !last;
   ui.continueButton.disabled = pending > 0;
-  ui.continueButton.classList.toggle("is-waiting", item.id === "nav" && !navbarComplete && pending > 0);
-  ui.continueButton.textContent = item.id !== "nav" || navbarComplete
-    ? "Continue"
-    : pending > 0 ? `Confirming · ${navbarConfirmed}/3` : `Continue · ${navbarConfirmed}/3`;
+  ui.continueButton.classList.remove("is-waiting");
+  ui.continueButton.textContent = "Continue";
   const busy = pending > 0;
   ui.doneButton.disabled = busy;
   ui.recordButton.disabled = busy;
-  ui.recordTitle.textContent = pairDraft ? "State 1 is ready"
-    : ui.autoMode.checked ? "Auto mode ready" : "Ready to record";
-  ui.recordHelp.textContent = pairDraft ? "Open or change it, then capture state 2."
-    : item.id === "nav" && navKind === "dropdown"
-      ? "Hover a menu open, then click the open dropdown once."
-      : ui.autoMode.checked ? "Scan the page and choose safe matches." : "Choose an element. Use ↑/↓ to select its parent.";
+  ui.recordTitle.textContent = ui.autoMode.checked ? "Auto mode ready" : "Ready to record";
+  ui.recordHelp.textContent = item.id === "dropdown"
+    ? "Hover a menu open, then click the open dropdown once."
+    : ui.autoMode.checked ? "Scan the page and choose safe matches." : "Choose an element. Use ↑/↓ to select its parent.";
   const recordLabel = ui.autoMode.checked ? "Auto" : "Record";
   ui.recordButton.innerHTML = `<span></span>${recordLabel}`;
-  renderNavbarProgress();
   renderTakes();
   if (!activeTab?.id) return;
   pageMessage({
     type: "HC_SET_RECORDING",
     recording: false,
-    mode: item.id,
+    mode: captureMode(),
     captureKind: currentKind(),
   }).catch(() => {});
-}
-
-function navbarReceiptCount() {
-  return new Set(takes
-    .filter((take) => take.kind === "navbar" && take.status === "success")
-    .map((take) => take.breakpoint)).size;
-}
-
-function navbarStatus(name) {
-  const take = [...takes].reverse().find((item) => item.kind === "navbar" && item.breakpoint === name);
-  if (take?.status === "success") return "confirmed";
-  if (take?.status === "sending") return "confirming";
-  if (take?.status === "failed") return "failed";
-  return navCapturePhases.get(name) || "waiting";
-}
-
-function renderNavbarProgress() {
-  const desktopStarted = takes.some((take) => take.kind === "navbar" && take.breakpoint === "desktop");
-  const visible = stage().id === "nav" && desktopStarted;
-  ui.navProgress.hidden = !visible;
-  if (!visible) return;
-  const count = navbarReceiptCount();
-  const statuses = ["desktop", "tablet", "mobile"].map(navbarStatus);
-  const working = statuses.some((status) => ["capturing", "captured", "confirming"].includes(status));
-  const failed = statuses.some((status) => status === "failed");
-  ui.navProgress.classList.toggle("working", working);
-  ui.navProgress.classList.toggle("failed", failed);
-  ui.navProgress.classList.toggle("complete", count === 3);
-  ui.navProgressLabel.textContent = count === 3
-    ? "Navbar confirmed in Paper"
-    : failed ? "Navbar needs attention"
-      : working ? "Capturing and confirming Navbar…" : "Waiting for Navbar capture";
-  ui.navProgressCount.textContent = `${count}/3`;
-  ui.navProgressBar.setAttribute("aria-valuenow", String(count));
-  ui.navProgressFill.style.width = `${(count / 3) * 100}%`;
-  ui.navProgressHelp.textContent = count === 3
-    ? "All three are confirmed. Continue is ready."
-    : failed ? "Retry the failed take; Continue will unlock after all three confirmations."
-      : "Continue unlocks automatically after Paper confirms all three.";
-  ui.navProgress.querySelectorAll("[data-breakpoint]").forEach((row) => {
-    const status = navbarStatus(row.dataset.breakpoint);
-    row.className = status;
-    row.querySelector("small").textContent = ({
-      waiting: "Waiting", capturing: "Capturing…", captured: "Captured · sending",
-      confirming: "Confirming…", confirmed: "Paper confirmed", failed: "Retry needed",
-    })[status] || "Waiting";
-  });
 }
 
 async function lockDesktopViewport() {
@@ -379,13 +314,6 @@ async function lockDesktopViewport() {
   return result;
 }
 
-function hasAllNavbarReceipts() {
-  const confirmed = new Set(takes
-    .filter((take) => take.kind === "navbar" && take.status === "success")
-    .map((take) => take.breakpoint));
-  return ["desktop", "tablet", "mobile"].every((name) => confirmed.has(name));
-}
-
 function setActivity(text, sending = false) {
   ui.activity.textContent = text;
   ui.activity.classList.toggle("sending", sending);
@@ -394,9 +322,12 @@ function setActivity(text, sending = false) {
 function setRecording(value) {
   recording = value;
   document.querySelector(".record-card").classList.toggle("recording", recording);
-  ui.recordTitle.textContent = recording ? "Recording is on" : pairDraft ? "State 1 is ready" : "Ready to record";
-  ui.recordHelp.textContent = recording ? "Click the outlined element." : pairDraft
-    ? "Open or change it, then capture state 2." : "Choose an element. Use ↑/↓ to select its parent.";
+  ui.recordTitle.textContent = recording ? "Recording is on" : "Ready to record";
+  ui.recordHelp.textContent = recording
+    ? "Click the outlined element."
+    : stage().id === "dropdown"
+      ? "Hover a menu open, then click the open dropdown once."
+      : "Choose an element. Use ↑/↓ to select its parent.";
   ui.recordButton.textContent = recording ? "Cancel" : ui.autoMode.checked ? "Auto" : "Record";
 }
 
@@ -419,7 +350,7 @@ async function startCapture() {
     try {
       await lockDesktopViewport();
     } catch (error) {
-      ui.captureError.textContent = `${error.message}. Nav and Hover need the tab locked to 1600.`;
+      ui.captureError.textContent = `${error.message}. Buttons need the tab locked to 1600.`;
     }
     if (started?.paperSections?.length) {
       await pageMessage({ type: "HC_SET_PAPER_SECTIONS", sections: started.paperSections });
@@ -428,7 +359,7 @@ async function startCapture() {
     ui.setup.hidden = true;
     ui.workspace.hidden = false;
     setConnection(true, "Paper ready");
-    setActivity("Paper destinations are ready. Capture Navbar first.");
+    setActivity("Paper destinations are ready. Capture dropdowns first.");
     renderStage();
   } catch (error) {
     ui.setupError.textContent = error.message;
@@ -497,72 +428,7 @@ async function retryTake(id) {
 async function handleCapture(capture) {
   setRecording(false);
   ui.captureError.textContent = "";
-  const item = stage();
-  if (item.id === "multi") {
-    if (!pairDraft) {
-      pairDraft = capture;
-      setActivity("State 1 captured locally. Change/open it on the page, then record state 2.");
-      renderStage();
-      return;
-    }
-    const first = pairDraft;
-    pairDraft = null;
-    await commitTake({
-      ...first,
-      id: `pair-${Date.now()}-${++requestSequence}`,
-      mode: item.id,
-      kind: "multi-state",
-      label: first.label,
-      defaultHtml: first.html,
-      hoverHtml: capture.html,
-      html: undefined,
-    });
-    return;
-  }
-  if (item.id === "nav" && navKind === "navbar") {
-    const desktop = {
-      ...capture,
-      breakpoint: "desktop",
-      contractWidth: 1600,
-    };
-    navCapturePhases.set("desktop", "captured");
-    const committed = await commitTake(desktop);
-    if (committed.status === "success") await captureNavbarBreakpoints(desktop);
-    return;
-  }
   await commitTake(capture);
-}
-
-async function captureNavbarBreakpoints(capture) {
-  pending += 1;
-  ui.captureError.textContent = "";
-  setActivity("Capturing Tablet 768 and Mobile 390 Navbar…", true);
-  renderStage();
-  try {
-    const result = await chrome.runtime.sendMessage({
-      type: "HC_CAPTURE_NAV_BREAKPOINTS",
-      url: capture.url,
-      fingerprint: capture.navFingerprint,
-    });
-    const responsiveCommits = [];
-    for (const responsive of result.captures || []) responsiveCommits.push(await commitTake(responsive));
-    const paperFailures = responsiveCommits.filter((take) => take.status !== "success");
-    if (!result.ok || paperFailures.length) {
-      const details = [
-        ...(result.errors || []),
-        ...paperFailures.map((take) => `${take.label}: ${take.error || "Paper rejected the take"}`),
-      ];
-      throw new Error(`Responsive Navbar failed: ${details.join("; ")}`);
-    }
-    setActivity("✓ Desktop, Tablet, and Mobile Navbar added to Paper");
-  } catch (error) {
-    ui.captureError.textContent = `${error.message}. Record the desktop Navbar again to retry its background captures.`;
-    setActivity("Responsive Navbar capture is incomplete.");
-  } finally {
-    pending -= 1;
-    renderStage();
-    if (sourceTabId) ensureInjected(sourceTabId).catch(() => {});
-  }
 }
 
 async function toggleRecord() {
@@ -575,13 +441,13 @@ async function toggleRecord() {
     if (recording) {
       setRecording(false);
       await pageMessage({
-        type: "HC_SET_RECORDING", recording: false, mode: stage().id, captureKind: currentKind(),
+        type: "HC_SET_RECORDING", recording: false, mode: captureMode(), captureKind: currentKind(),
       });
       return;
     }
     setRecording(true);
     await pageMessage({
-      type: "HC_SET_RECORDING", recording: true, mode: stage().id, captureKind: currentKind(),
+      type: "HC_SET_RECORDING", recording: true, mode: captureMode(), captureKind: currentKind(),
     });
   } catch (error) {
     setRecording(false);
@@ -593,29 +459,26 @@ async function toggleRecord() {
 async function runAuto() {
   ui.recordButton.disabled = true;
   ui.captureError.textContent = "";
-  setActivity(stage().id === "hover"
-    ? "Auto is walking every section for hover pairs…"
+  setActivity(stage().id === "buttons"
+    ? "Auto is walking every section for button hover pairs…"
     : "Auto is scanning visible candidates…", true);
   try {
-    if (stage().id === "hover") {
+    if (stage().id === "buttons") {
       const tab = await resolveSourceTab();
       await ensureInjected(tab.id);
       const result = await chrome.runtime.sendMessage({ type: "HC_AUTO_HOVER", tabId: tab.id });
-      if (!result?.ok) throw new Error(result?.error || "Auto Hover failed");
+      if (!result?.ok) throw new Error(result?.error || "Auto Buttons failed");
       for (const capture of result.captures || []) await commitTake(capture);
-      if (!result.captures?.length) throw new Error("Auto did not find a safe hover candidate");
+      if (!result.captures?.length) throw new Error("Auto did not find a safe button candidate");
       const sections = new Set((result.captures || []).map((take) => take.sectionId).filter(Boolean));
-      setActivity(`✓ ${result.captures.length} hover pairs across ${sections.size || 1} sections`);
+      setActivity(`✓ ${result.captures.length} button pairs across ${sections.size || 1} sections`);
       return;
     }
-    if (stage().id === "multi") {
-      throw new Error("Multi-state uses two manual takes so Capture Tool never invents a second state");
-    }
-    if (stage().id === "nav" && navKind === "dropdown") {
+    if (stage().id === "dropdown") {
       throw new Error("Hover the dropdown open, then click it once");
     }
     const result = await pageMessage({
-      type: "HC_AUTO_SINGLE", mode: stage().id, captureKind: currentKind(),
+      type: "HC_AUTO_SINGLE", mode: captureMode(), captureKind: currentKind(),
     });
     if (!result?.ok) throw new Error(result?.error || "Auto did not find a safe candidate");
     await handleCapture(result.capture);
@@ -629,7 +492,6 @@ async function runAuto() {
 
 function changeStage(index) {
   if (pending > 0 || index < 0 || index >= STAGES.length) return;
-  pairDraft = null;
   stageIndex = index;
   setRecording(false);
   setActivity("");
@@ -670,14 +532,10 @@ chrome.runtime.onMessage.addListener((message) => {
   if (message.type === "HC_TAKE_READY") {
     setRecording(false);
     if (message.ok) commitTake(message.capture);
-    else ui.captureError.textContent = message.error || "Hover capture failed";
+    else ui.captureError.textContent = message.error || "Button capture failed";
   }
   if (message.type === "HC_RECORDING_CHANGED") {
     setRecording(Boolean(message.recording));
-  }
-  if (message.type === "HC_NAV_BREAKPOINT_PROGRESS") {
-    navCapturePhases.set(message.breakpoint, message.phase);
-    renderStage();
   }
 });
 
@@ -687,15 +545,6 @@ ui.continueButton.addEventListener("click", () => changeStage(stageIndex + 1));
 ui.backButton.addEventListener("click", () => changeStage(stageIndex - 1));
 ui.doneButton.addEventListener("click", finishSession);
 ui.autoMode.addEventListener("change", renderStage);
-
-for (const button of ui.navKindPicker.querySelectorAll(".kind")) {
-  button.addEventListener("click", () => {
-    navKind = button.dataset.kind;
-    pairDraft = null;
-    for (const item of ui.navKindPicker.querySelectorAll(".kind")) item.classList.toggle("active", item === button);
-    renderStage();
-  });
-}
 
 async function hydrateFromOpenTab() {
   const session = await sessionFromOpenTab();

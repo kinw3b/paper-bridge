@@ -5,14 +5,16 @@
     || !globalThis.PaperCaptureTargeting?.targetFor
     || !globalThis.PaperCaptureNavBreakpoints
     || !globalThis.PaperCaptureSections
-    || !globalThis.PaperCaptureTags) {
+    || !globalThis.PaperCaptureTags
+    || !globalThis.PaperCaptureSerializeCss
+    || !globalThis.PaperCaptureSnapshot?.serialize) {
     return;
   }
 
   const state = {
     recording: false,
-    mode: "nav",
-    captureKind: "navbar",
+    mode: "dropdown",
+    captureKind: "dropdown",
     hovered: null,
     hoverSource: null,
     parentDepth: 0,
@@ -35,30 +37,11 @@
   root.append(box, status);
   document.documentElement.append(root);
 
-  const STYLE_PROPS = [
-    "display", "position", "box-sizing", "width", "height", "min-width", "min-height",
-    "max-width", "max-height", "flex", "flex-direction", "flex-wrap", "flex-grow",
-    "flex-shrink", "align-items", "align-self", "justify-content", "gap", "row-gap",
-    "column-gap", "grid-template-columns", "grid-template-rows", "grid-auto-flow",
-    "padding-top", "padding-right", "padding-bottom", "padding-left", "margin-top",
-    "margin-right", "margin-bottom", "margin-left", "overflow", "opacity", "visibility",
-    "background-color", "background-image", "background-size", "background-position",
-    "background-repeat", "border-radius", "outline-offset", "box-shadow", "color", "font-family", "font-size",
-    "font-style", "font-weight", "letter-spacing", "line-height", "text-align",
-    "text-decoration", "text-transform", "white-space", "object-fit", "object-position",
-    "transform", "transform-origin", "filter", "clip-path"
-  ];
-
-  const SKIP_TAGS = new Set(["SCRIPT", "STYLE", "NOSCRIPT", "TEMPLATE"]);
-  const KEEP_ATTRS = new Set([
-    "alt", "aria-label", "aria-expanded", "aria-haspopup", "aria-hidden", "role", "href",
-    "src", "srcset", "sizes", "type", "name", "value", "placeholder", "checked", "selected",
-    "disabled", "viewbox", "preserveaspectratio", "xmlns", "xmlns:xlink", "d", "fill",
-    "fill-rule", "fill-opacity", "clip-rule", "stroke", "stroke-width", "stroke-linecap",
-    "stroke-linejoin", "stroke-miterlimit", "stroke-opacity",
-    "cx", "cy", "r", "rx", "ry", "x", "y", "x1", "x2", "y1", "y2", "points",
-    "width", "height"
-  ]);
+  const { componentName } = globalThis.PaperCaptureNaming;
+  const { interactiveRoot, targetFor } = globalThis.PaperCaptureTargeting;
+  const { fingerprintNav, pickNavCandidate } = globalThis.PaperCaptureNavBreakpoints;
+  const tagsApi = globalThis.PaperCaptureTags;
+  const cssApi = globalThis.PaperCaptureSerializeCss;
 
   function layoutPresent(element) {
     if (!(element instanceof Element)) return false;
@@ -127,111 +110,13 @@
     });
   }
 
-  const { componentName } = globalThis.PaperCaptureNaming;
-  const { interactiveRoot, targetFor } = globalThis.PaperCaptureTargeting;
-  const { fingerprintNav, pickNavCandidate } = globalThis.PaperCaptureNavBreakpoints;
-  const tagsApi = globalThis.PaperCaptureTags;
-
-  function safeUrl(value) {
-    if (!value) return value;
-    try { return new URL(value, location.href).href; } catch { return value; }
-  }
-
-  function resolveSvgUse(source, budget) {
-    const href = source.getAttribute("href") || source.getAttribute("xlink:href") || "";
-    let hash = "";
-    try { hash = new URL(href, location.href).hash; } catch { hash = href.startsWith("#") ? href : ""; }
-    if (!hash) return null;
-    let id = hash.slice(1);
-    try { id = decodeURIComponent(id); } catch { /* keep the literal fragment */ }
-    const referenced = source.ownerDocument.getElementById(id);
-    if (!referenced || referenced === source) return null;
-    return cloneInline(referenced, budget);
-  }
-
-  function paintDeclarations(computed) {
-    const declarations = [];
-    const sides = ["top", "right", "bottom", "left"];
-    const borders = sides.map((side) => ({
-      side,
-      width: computed.getPropertyValue(`border-${side}-width`),
-      style: computed.getPropertyValue(`border-${side}-style`),
-      color: computed.getPropertyValue(`border-${side}-color`),
-    })).filter((border) => Number.parseFloat(border.width) > 0
-      && border.style && border.style !== "none" && border.style !== "hidden");
-    if (borders.length === 4 && borders.every((border) => border.width === borders[0].width
-      && border.style === borders[0].style && border.color === borders[0].color)) {
-      // Paper reliably imports `border`, unlike individual border edge properties.
-      declarations.push(`border:${borders[0].width} ${borders[0].style} ${borders[0].color}`);
-    } else {
-      for (const border of borders) {
-        declarations.push(`border-${border.side}:${border.width} ${border.style} ${border.color}`);
-      }
-    }
-    const outlineWidth = computed.getPropertyValue("outline-width");
-    const outlineStyle = computed.getPropertyValue("outline-style");
-    const outlineColor = computed.getPropertyValue("outline-color");
-    if (Number.parseFloat(outlineWidth) > 0 && outlineStyle && outlineStyle !== "none" && outlineStyle !== "hidden") {
-      declarations.push(`outline:${outlineWidth} ${outlineStyle} ${outlineColor}`);
-    }
-    return declarations;
-  }
-
-  function cloneInline(source, budget) {
-    if (!source || budget.count >= 520 || budget.chars >= 120000) return null;
-    if (source.nodeType === Node.TEXT_NODE) {
-      const value = source.nodeValue || "";
-      budget.chars += value.length;
-      return document.createTextNode(value);
-    }
-    if (!(source instanceof Element) || SKIP_TAGS.has(source.tagName)) return null;
-    if (source.closest("x-paper-capture-root") || source.hasAttribute("data-paper-tool")) return null;
-    if (source.tagName === "USE") {
-      const resolved = resolveSvgUse(source, budget);
-      if (resolved) return resolved;
-    }
-    budget.count += 1;
-    const clone = document.createElement(source.tagName.toLowerCase());
-    for (const attr of source.attributes) {
-      const name = attr.name.toLowerCase();
-      if (!KEEP_ATTRS.has(name) && !name.startsWith("aria-") && !name.startsWith("data-component")) continue;
-      let value = attr.value;
-      if (name === "src" || name === "href" || name === "srcset") value = safeUrl(value);
-      try { clone.setAttribute(attr.name, value); } catch { /* invalid source attr */ }
-    }
-    const computed = getComputedStyle(source);
-    const declarations = [];
-    for (const property of STYLE_PROPS) {
-      let value = computed.getPropertyValue(property);
-      if (!value || value === "normal" && property !== "line-height") continue;
-      if (property === "line-height" && /px$/.test(value)) value = "120%";
-      if (source === state.hovered && ["position", "transform"].includes(property)) {
-        value = property === "position" ? "relative" : "none";
-      }
-      declarations.push(`${property}:${value}`);
-    }
-    declarations.push(...paintDeclarations(computed));
-    clone.setAttribute("style", declarations.join(";"));
-    for (const child of source.childNodes) {
-      const next = cloneInline(child, budget);
-      if (next) clone.append(next);
-      if (budget.count >= 520 || budget.chars >= 120000) break;
-    }
-    return clone;
-  }
-
   function serialize(element) {
-    state.hovered = element;
-    const clone = cloneInline(element, { count: 0, chars: 0 });
-    if (!clone) throw new Error("This element could not be serialized");
-    clone.setAttribute("layer-name", componentName(element, { kind: state.captureKind }) || element.tagName.toLowerCase());
-    clone.style.margin = "0";
-    clone.style.position = "relative";
-    clone.style.left = "auto";
-    clone.style.top = "auto";
-    clone.style.transform = "none";
-    state.hovered = null;
-    return clone.outerHTML;
+    const html = globalThis.PaperCaptureSnapshot.serialize(element, {
+      layerName: componentName(element, { kind: state.captureKind }) || element.tagName.toLowerCase(),
+      flattenMotion: true,
+    });
+    if (!html) throw new Error("This element could not be serialized");
+    return html;
   }
 
   function captureData(element, extras = {}) {
@@ -750,6 +635,60 @@
     return nodes;
   }
 
+  function selectedTarget(captureId) {
+    return state.selected.get(captureId)
+      || document.querySelector(`[data-paper-capture-id="${CSS.escape(captureId)}"]`);
+  }
+
+  function freezeMotion(on) {
+    const id = "paper-capture-freeze";
+    let tag = document.getElementById(id);
+    if (on) {
+      if (!tag) {
+        tag = document.createElement("style");
+        tag.id = id;
+        tag.textContent = cssApi.freezeMotionStyleText();
+        document.documentElement.append(tag);
+      }
+      document.documentElement.setAttribute("data-paper-capture-freeze", "");
+      return;
+    }
+    document.documentElement.removeAttribute("data-paper-capture-freeze");
+    tag?.remove();
+  }
+
+  function snapshotOf(element) {
+    const nodes = [element, ...element.querySelectorAll("*")].slice(0, 24);
+    return nodes.map((node) => cssApi.paintSnapshot(getComputedStyle(node))).join("||");
+  }
+
+  function waitPaintRest(element) {
+    return new Promise((resolve) => {
+      if (!element?.isConnected) {
+        resolve({ ok: false, error: "Target disappeared from the page" });
+        return;
+      }
+      let previous = "";
+      let stable = 0;
+      let frames = 0;
+      const tick = () => {
+        const now = snapshotOf(element);
+        if (now === previous) stable += 1;
+        else {
+          stable = 0;
+          previous = now;
+        }
+        frames += 1;
+        if (cssApi.isPaintRest(previous, now, stable) || frames >= 24) {
+          resolve({ ok: true, stable: cssApi.isPaintRest(previous, now, stable), frames });
+          return;
+        }
+        setTimeout(tick, 50);
+      };
+      tick();
+    });
+  }
+
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (!message || typeof message.type !== "string") return false;
     if (message.type === "HC_SET_PAPER_SECTIONS") {
@@ -767,6 +706,7 @@
       return false;
     }
     if (message.type === "HC_DEACTIVATE") {
+      freezeMotion(false);
       setRecording(false);
       clearSemanticOverlays();
       root.remove();
@@ -774,9 +714,17 @@
       sendResponse({ ok: true });
       return false;
     }
+    if (message.type === "HC_FREEZE_MOTION") {
+      freezeMotion(Boolean(message.freeze));
+      sendResponse({ ok: true });
+      return false;
+    }
+    if (message.type === "HC_WAIT_PAINT_REST") {
+      waitPaintRest(selectedTarget(message.captureId)).then(sendResponse);
+      return true;
+    }
     if (message.type === "HC_PREPARE_TARGET") {
-      const element = state.selected.get(message.captureId)
-        || document.querySelector(`[data-paper-capture-id="${CSS.escape(message.captureId)}"]`);
+      const element = selectedTarget(message.captureId);
       if (!element?.isConnected) {
         sendResponse({ ok: false, error: "Target disappeared from the page" });
         return false;
@@ -794,8 +742,7 @@
       return false;
     }
     if (message.type === "HC_SERIALIZE_TARGET") {
-      const element = state.selected.get(message.captureId)
-        || document.querySelector(`[data-paper-capture-id="${CSS.escape(message.captureId)}"]`);
+      const element = selectedTarget(message.captureId);
       if (!element || !visible(element)) {
         sendResponse({ ok: false, error: "Target disappeared from the page" });
         return false;
@@ -867,3 +814,4 @@
   setRecording(false);
   window.__PAPER_CAPTURE_EXTENSION__ = true;
 })();
+

@@ -30,6 +30,8 @@ const CONTENT_HELPERS = [
   "content/component-names.js",
   "content/paper-sections.js",
   "content/tag-overlays.js",
+  "content/serialize-css.js",
+  "content/paper-snapshot.js",
 ];
 
 async function pageReady(tabId) {
@@ -42,6 +44,8 @@ async function pageReady(tabId) {
         && globalThis.PaperCaptureNavBreakpoints
         && globalThis.PaperCaptureSections
         && globalThis.PaperCaptureTags
+        && globalThis.PaperCaptureSerializeCss
+        && globalThis.PaperCaptureSnapshot?.serialize
         && window.__PAPER_CAPTURE_EXTENSION__
       ),
     });
@@ -121,25 +125,17 @@ async function hoverPair(tabId, captureId) {
       buttons: 0,
       pointerType: "mouse",
     });
-    await sleep(280);
     const prepared = await tabSend(tabId, { type: "HC_PREPARE_TARGET", captureId });
     if (!prepared?.ok) throw new Error(prepared?.error || "Target is no longer visible");
-    const fallbackPoint = prepared.point;
-    await cdp(tabId, "Input.dispatchMouseEvent", {
-      type: "mouseMoved",
-      x: 2,
-      y: 2,
-      buttons: 0,
-      pointerType: "mouse",
-    });
-    await sleep(220);
+    const restOff = await tabSend(tabId, { type: "HC_WAIT_PAINT_REST", captureId });
+    if (!restOff?.ok) throw new Error(restOff?.error || "Default state did not settle");
     const before = await tabSend(tabId, {
       type: "HC_SERIALIZE_TARGET",
       captureId,
       state: "default",
     });
     if (!before?.ok) throw new Error(before?.error || "Default state could not be serialized");
-    const point = before.point || fallbackPoint;
+    const point = before.point || prepared.point;
     await cdp(tabId, "Input.dispatchMouseEvent", {
       type: "mouseMoved",
       x: point.x,
@@ -147,7 +143,8 @@ async function hoverPair(tabId, captureId) {
       buttons: 0,
       pointerType: "mouse",
     });
-    await sleep(850);
+    const restOn = await tabSend(tabId, { type: "HC_WAIT_PAINT_REST", captureId });
+    if (!restOn?.ok) throw new Error(restOn?.error || "Hover state did not settle");
     const after = await tabSend(tabId, {
       type: "HC_SERIALIZE_TARGET",
       captureId,
@@ -165,6 +162,7 @@ async function hoverPair(tabId, captureId) {
       },
     };
   } finally {
+    await tabSend(tabId, { type: "HC_FREEZE_MOTION", freeze: false }).catch(() => {});
     if (attachedHere) await detach(tabId);
   }
 }

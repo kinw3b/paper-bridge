@@ -4,6 +4,17 @@
       || element;
   }
 
+  /** Paper Snapshot only highlights HTMLElement. SVG path/use/svg are never the take root. */
+  function htmlHost(element) {
+    let node = element;
+    while (node && !(node instanceof HTMLElement)) {
+      const parent = node.parentElement;
+      if (!parent) break;
+      node = parent;
+    }
+    return node || element;
+  }
+
   function parentAtDepth(element, depth = 0) {
     let target = element;
     const steps = Math.max(0, Math.min(12, Number(depth) || 0));
@@ -17,7 +28,8 @@
 
   /** Manual Navbar starts exact. Parent promotion happens only via ArrowUp. */
   function targetFor(element, mode, _kind, parentDepth = 0) {
-    const base = mode === "hover" ? interactiveRoot(element) : element;
+    const host = htmlHost(element);
+    const base = mode === "hover" ? interactiveRoot(host) : host;
     return parentAtDepth(base, parentDepth);
   }
 
@@ -30,6 +42,7 @@
 
   globalThis.PaperCaptureTargeting = {
     fullNavbarFor,
+    htmlHost,
     interactiveRoot,
     parentAtDepth,
     targetFor,

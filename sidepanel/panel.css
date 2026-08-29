@@ -224,7 +224,7 @@ code { padding: 1px 4px; border-radius: var(--radius); background: var(--bg); co
 .error:empty { margin: 0; }
 
 .workspace { overflow: hidden; }
-.stage-rail { display: grid; grid-template-columns: repeat(5, 1fr); border-bottom: 1px solid var(--line); }
+.stage-rail { display: grid; grid-template-columns: repeat(3, 1fr); border-bottom: 1px solid var(--line); }
 .stage-dot {
   position: relative;
   display: grid;

@@ -1,7 +1,9 @@
 (() => {
-  // Paper Snapshot 0.3.8 serializer (lidfahaahiogmnlccifabccgplofocck).
+  // Paper Snapshot 0.3.12 serializer (lidfahaahiogmnlccifabccgplofocck).
   // The official picker never selects SVGElement — only an HTML host — then this
   // walk inlines <use>, copies SVG geometry attrs, and diffs computed CSS.
+  // 0.3.12 additions: reduced-motion emulation, canvas/video rasterization,
+  // pseudo `content: url()` → <img>, positioned/transform probe resets.
   const VOID_TAGS = new Set([
     "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta",
     "param", "source", "track", "wbr",
@@ -74,13 +76,33 @@
     return String(value).replaceAll("&", "&amp;").replaceAll('"', "&quot;");
   }
 
-  function pseudoContentText(styles) {
-    const raw = styles.content;
-    if (!raw) return "";
+  function pseudoContentParts(raw) {
+    if (!raw) return [];
     const primary = String(raw).split(" / ")[0];
-    let text = "";
-    for (const match of primary.matchAll(/(['"])(.*?)\1/g)) text += match[2];
-    return text;
+    const parts = [];
+    for (const match of primary.matchAll(/url\(\s*(['"]?)(.*?)\1\s*\)|(['"])(.*?)\3/g)) {
+      if (match[0].startsWith("url(")) {
+        if (match[2]) parts.push({ kind: "url", url: match[2] });
+      } else {
+        parts.push({ kind: "text", text: match[4] });
+      }
+    }
+    return parts;
+  }
+
+  function pseudoMarkup(styles) {
+    const parts = pseudoContentParts(styles.content);
+    delete styles.content;
+    const style = cssText(styles);
+    const first = parts[0];
+    if (parts.length === 1 && first && first.kind === "url") {
+      return `<img src="${escapeAttr(first.url)}" style="${escapeAttr(style)}">`;
+    }
+    let inner = "";
+    for (const part of parts) {
+      inner += part.kind === "url" ? `<img src="${escapeAttr(part.url)}">` : escapeText(part.text);
+    }
+    return `<div style="${escapeAttr(style)}">${inner}</div>`;
   }
 
   function collapsedAbsolute(styles) {
@@ -170,6 +192,16 @@
     probe.style.setProperty("height", "auto", "important");
     probe.style.setProperty("margin", "0", "important");
     probe.style.setProperty("overflow", "visible", "important");
+    probe.style.setProperty("position", "static", "important");
+    probe.style.setProperty("top", "auto", "important");
+    probe.style.setProperty("right", "auto", "important");
+    probe.style.setProperty("bottom", "auto", "important");
+    probe.style.setProperty("left", "auto", "important");
+    probe.style.setProperty("inset", "auto", "important");
+    probe.style.setProperty("transform", "none", "important");
+    probe.style.setProperty("translate", "none", "important");
+    probe.style.setProperty("rotate", "none", "important");
+    probe.style.setProperty("scale", "none", "important");
     probe.style.setProperty("padding", "0", "important");
     probe.style.setProperty("text-align", "initial", "important");
     probe.style.setProperty("width", "auto", "important");
@@ -187,7 +219,7 @@
       const value = target.get(name);
       const prior = baseline.get(name);
       if (value && !value.startsWith("--") && (value !== prior || ALWAYS_STYLE.includes(name))) {
-        next[name] = value.replaceAll('"', "'");
+        next[name] = value;
       }
     }
     if (isRoot) {
@@ -364,16 +396,15 @@
     const canStyle = !(node instanceof SVGElement) || node instanceof SVGGraphicsElement;
     if (canStyle) {
       const before = computedStyles(node, { pseudo: "::before" });
-      if (Object.keys(before).length && !collapsedAbsolute(before)) {
-        const text = pseudoContentText(before);
-        delete before.content;
-        kids.push(`<div style="${cssText(before)}">${escapeText(text)}</div>`);
-      }
+      if (Object.keys(before).length && !collapsedAbsolute(before)) kids.push(pseudoMarkup(before));
       styles = computedStyles(node, { isRoot });
     }
 
+    const rasterized = node instanceof HTMLCanvasElement || node instanceof HTMLVideoElement;
     const sourceAttrs = node.getAttributeNames().map((name) => [name, node.getAttribute(name) || ""]);
-    const childNodes = node.shadowRoot ? [...node.shadowRoot.childNodes] : [...node.childNodes];
+    const childNodes = rasterized
+      ? []
+      : node.shadowRoot ? [...node.shadowRoot.childNodes] : [...node.childNodes];
     for (const child of childNodes) {
       let expanded = [];
       if (child instanceof HTMLSlotElement) expanded = [...child.assignedNodes({ flatten: true })];
@@ -387,11 +418,7 @@
     }
 
     const after = computedStyles(node, { pseudo: "::after" });
-    if (Object.keys(after).length && !collapsedAbsolute(after)) {
-      const text = pseudoContentText(after);
-      delete after.content;
-      kids.push(`<div style="${cssText(after)}">${escapeText(text)}</div>`);
-    }
+    if (Object.keys(after).length && !collapsedAbsolute(after)) kids.push(pseudoMarkup(after));
 
     const attrs = [];
     if (node instanceof HTMLImageElement) {
@@ -420,7 +447,16 @@
       }
     }
 
-    const outTag = TABLE_TAGS.has(tag) || tag === "body" ? "div" : tag;
+    let outTag = TABLE_TAGS.has(tag) || tag === "body" ? "div" : tag;
+    if (rasterized) {
+      const dataUrl = rasterize(node);
+      if (dataUrl) {
+        outTag = "img";
+        attrs.push(["src", dataUrl]);
+        if (styles.width === undefined || styles.width === "auto") styles.width = computed.width;
+        if (styles.height === undefined || styles.height === "auto") styles.height = computed.height;
+      }
+    }
     if (outTag !== tag) attrs.push(["paper-snapshot-original-tag", node.tagName]);
     if (node instanceof SVGElement) {
       const svgStyle = window.getComputedStyle(node);
@@ -461,9 +497,142 @@
     return `${open}${kids.join("")}${close}`;
   }
 
+  function rasterize(element) {
+    try {
+      let canvas = element;
+      if (element instanceof HTMLVideoElement) {
+        if (element.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) return "";
+        canvas = document.createElement("canvas");
+        canvas.width = element.videoWidth;
+        canvas.height = element.videoHeight;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) return "";
+        ctx.drawImage(element, 0, 0);
+      }
+      const url = canvas.toDataURL("image/png");
+      return url.startsWith("data:image/png;base64,") ? url : "";
+    } catch {
+      return ""; // tainted canvas / cross-origin video
+    }
+  }
+
+  // Mirrors 0.3.12: hoist every `@media (prefers-reduced-motion: reduce)` block into an
+  // adopted sheet so scroll-in/entrance animations serialize at their settled state,
+  // then finish any running CSS transitions. Returns a restore function.
+  function emulateReducedMotion() {
+    const restores = [];
+    const reducedRe = /\(\s*prefers-reduced-motion\s*(?::\s*reduce\s*)?\)/i;
+
+    function classify(mediaList) {
+      const kept = [];
+      for (const query of Array.from(mediaList)) {
+        if (/^(only\s+)?not\b/i.test(query.trim()) || !reducedRe.test(query)) continue;
+        const stripped = query.replace(/\([^()]*\)/g, "");
+        if (stripped.includes("(") || stripped.includes(")") || /\bor\b/i.test(stripped)) continue;
+        const rest = query.replace(reducedRe, "").split(/\s+and\s+/i).map((s) => s.trim()).filter(Boolean);
+        kept.push(rest.join(" and "));
+      }
+      if (!kept.length) return { kind: "unaffected" };
+      if (kept.includes("")) return { kind: "unconditional" };
+      return { kind: "conditional", mediaText: kept.join(", ") };
+    }
+
+    function wrap(css, preludes) {
+      let out = css;
+      for (let i = preludes.length - 1; i >= 0; i--) out = `${preludes[i]} { ${out} }`;
+      return out;
+    }
+
+    function collect(source, preludes, out, seen) {
+      let rules;
+      if (source instanceof CSSStyleSheet) {
+        if (seen.has(source)) return;
+        seen.add(source);
+        try { rules = source.cssRules; } catch { return; } // cross-origin sheet
+      } else {
+        rules = source;
+      }
+      for (const rule of Array.from(rules)) {
+        if (typeof CSSImportRule !== "undefined" && rule instanceof CSSImportRule) {
+          if (rule.styleSheet) collect(rule.styleSheet, preludes, out, seen);
+          continue;
+        }
+        if (typeof CSSMediaRule !== "undefined" && rule instanceof CSSMediaRule) {
+          const verdict = classify(rule.media);
+          if (verdict.kind !== "unaffected") {
+            const body = Array.from(rule.cssRules, (r) => r.cssText).join("\n");
+            if (body) {
+              const css = verdict.kind === "conditional" ? `@media ${verdict.mediaText} { ${body} }` : body;
+              out.push(wrap(css, preludes));
+            }
+            continue;
+          }
+          collect(rule.cssRules, [...preludes, `@media ${rule.media.mediaText}`], out, seen);
+          continue;
+        }
+        if (!("cssRules" in rule)) continue;
+        const brace = rule.cssText.indexOf("{");
+        if (brace === -1) continue;
+        const prelude = rule.cssText.slice(0, brace).trim();
+        const lower = prelude.toLowerCase();
+        if (lower.startsWith("@supports") || lower.startsWith("@container") || lower.startsWith("@scope")) {
+          collect(rule.cssRules, [...preludes, prelude], out, seen);
+        } else if (lower.startsWith("@layer")) {
+          collect(rule.cssRules, preludes, out, seen);
+        }
+      }
+    }
+
+    function restore() {
+      for (const fn of restores) fn();
+    }
+
+    try {
+      const touched = [];
+      const queue = [document];
+      while (queue.length) {
+        const root = queue.shift();
+        const hoisted = [];
+        const seen = new WeakSet();
+        const sheets = [];
+        if (root.styleSheets) sheets.push(...root.styleSheets);
+        if (root.adoptedStyleSheets) sheets.push(...root.adoptedStyleSheets);
+        for (const sheet of sheets) collect(sheet, [], hoisted, seen);
+        if (hoisted.length) {
+          const sheet = new CSSStyleSheet();
+          sheet.replaceSync(hoisted.join("\n"));
+          const prior = root.adoptedStyleSheets ? [...root.adoptedStyleSheets] : [];
+          root.adoptedStyleSheets = [...prior, sheet];
+          restores.push(() => { root.adoptedStyleSheets = prior; });
+          touched.push(root);
+        }
+        for (const el of root.querySelectorAll("*")) if (el.shadowRoot) queue.push(el.shadowRoot);
+      }
+      if (typeof CSSTransition !== "undefined") {
+        for (const root of touched) {
+          for (const anim of root.getAnimations()) if (anim instanceof CSSTransition) anim.finish();
+        }
+      }
+    } catch (error) {
+      restore();
+      throw error;
+    }
+    return restore;
+  }
+
   function serialize(element, { layerName = "", flattenMotion = false } = {}) {
     if (!(element instanceof Element)) return "";
-    return serializeNode(element, { isRoot: true, flattenMotion, layerName });
+    let restore = null;
+    try {
+      restore = emulateReducedMotion();
+    } catch (error) {
+      console.warn("Paper Capture: reduced motion emulation failed, capturing as-is.", error);
+    }
+    try {
+      return serializeNode(element, { isRoot: true, flattenMotion, layerName });
+    } finally {
+      if (restore) restore();
+    }
   }
 
   globalThis.PaperCaptureSnapshot = {
@@ -471,5 +640,7 @@
     svgHrefId,
     expandUse,
     findById,
+    pseudoContentParts,
+    pseudoMarkup,
   };
 })();

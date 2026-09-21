@@ -47,7 +47,6 @@ let pending = 0;
 const requests = new Map();
 const takes = [];
 const retryPayloads = new Map();
-let desktopViewport = null;
 
 function setConnection(online, text = online ? "Connected" : "Offline") {
   ui.connection.classList.toggle("online", online);
@@ -149,18 +148,22 @@ function nativeRequest(type, payload = {}) {
   });
 }
 
+function isWebTab(tab) {
+  return Boolean(tab?.id) && /^(https?|file):/i.test(tab.url || "");
+}
+
 async function currentTab() {
+  const tabs = await chrome.tabs.query({});
+  const sessionTab = tabs.find((item) => isWebTab(item) && parseHref(item.url || ""));
+  if (sessionTab) return sessionTab;
   const queries = [
     { active: true, lastFocusedWindow: true },
     { active: true, currentWindow: true },
   ];
   for (const query of queries) {
     const [tab] = await chrome.tabs.query(query);
-    if (tab?.id && /^(https?|file):/i.test(tab.url || "")) return tab;
+    if (isWebTab(tab)) return tab;
   }
-  const tabs = await chrome.tabs.query({});
-  const tab = tabs.find((item) => /^(https?|file):/i.test(item.url || "") && parseHref(item.url || ""));
-  if (tab?.id) return tab;
   throw new Error("Open the source URL in this tab before starting capture");
 }
 
@@ -176,7 +179,7 @@ async function resolveSourceTab() {
   if (sourceTabId) {
     try {
       const tab = await chrome.tabs.get(sourceTabId);
-      if (tab?.id && !tab.discarded) return rememberSourceTab(tab);
+      if (isWebTab(tab) && !tab.discarded) return rememberSourceTab(tab);
     } catch { /* tab was closed or was a capture popup */ }
   }
   if (sourceUrl) {
@@ -303,17 +306,6 @@ function renderStage() {
   }).catch(() => {});
 }
 
-async function lockDesktopViewport() {
-  const tab = await resolveSourceTab();
-  await ensureInjected(tab.id);
-  const result = await chrome.runtime.sendMessage({ type: "HC_LOCK_DESKTOP_VIEWPORT", tabId: tab.id });
-  desktopViewport = result;
-  if (!result?.ok) {
-    throw new Error(result?.error || "Could not lock the page to the 1600 desktop lander");
-  }
-  return result;
-}
-
 function setActivity(text, sending = false) {
   ui.activity.textContent = text;
   ui.activity.classList.toggle("sending", sending);
@@ -347,11 +339,7 @@ async function startCapture() {
       config: { paperFileId, projectRoot, paperEndpoint, sourceUrl: cleanSourceUrl(activeTab.url) },
     });
     await ensureInjected(activeTab.id);
-    try {
-      await lockDesktopViewport();
-    } catch (error) {
-      ui.captureError.textContent = `${error.message}. Buttons need the tab locked to 1600.`;
-    }
+    await chrome.runtime.sendMessage({ type: "HC_RELEASE_VIEWPORT", tabId: activeTab.id }).catch(() => {});
     if (started?.paperSections?.length) {
       await pageMessage({ type: "HC_SET_PAPER_SECTIONS", sections: started.paperSections });
     }
@@ -504,7 +492,7 @@ async function finishSession() {
   ui.doneButton.disabled = true;
   setActivity("Closing capture session…", true);
   try {
-    await chrome.runtime.sendMessage({ type: "HC_RELEASE_VIEWPORT" }).catch(() => {});
+    await chrome.runtime.sendMessage({ type: "HC_RELEASE_VIEWPORT", tabId: sourceTabId }).catch(() => {});
     await nativeRequest("COMPLETE_SESSION", {
       summary: {
         sourceUrl: activeTab.url,

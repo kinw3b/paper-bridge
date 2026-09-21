@@ -1,13 +1,10 @@
 import { normalizeSession } from "./shared/session-url.js";
 
 const PROTOCOL = "1.3";
-const DESKTOP_WIDTH = 1600;
 const NAV_BREAKPOINTS = [
   { name: "tablet", width: 768, height: 1024 },
   { name: "mobile", width: 390, height: 844 },
 ];
-
-const desktopLock = { tabId: null, attached: false };
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -113,11 +110,8 @@ function cdp(tabId, method, params = {}) {
 async function hoverPair(tabId, captureId) {
   let attachedHere = false;
   try {
-    const locked = desktopLock.attached && desktopLock.tabId === tabId;
-    if (!locked) {
-      await attach(tabId);
-      attachedHere = true;
-    }
+    await attach(tabId);
+    attachedHere = true;
     await cdp(tabId, "Input.dispatchMouseEvent", {
       type: "mouseMoved",
       x: 2,
@@ -224,41 +218,11 @@ async function pageSize(tabId) {
   return shot?.result || { width: 0, height: 0 };
 }
 
-async function releaseDesktopLock() {
-  const tabId = desktopLock.tabId;
-  desktopLock.tabId = null;
-  desktopLock.attached = false;
-  if (Number.isInteger(tabId)) await detach(tabId);
-}
-
-async function lockDesktopViewport(tabId) {
-  try {
-    const tab = await chrome.tabs.get(tabId);
-    if (Number.isInteger(tab.windowId)) {
-      await chrome.windows.update(tab.windowId, { state: "maximized" }).catch(() => {});
-    }
-    await chrome.tabs.setZoom(tabId, 1).catch(() => {});
-    if (chrome.tabs.setZoomSettings) {
-      await chrome.tabs.setZoomSettings(tabId, { mode: "disabled", scope: "per-tab" }).catch(() => {});
-    }
-    await attach(tabId);
-    desktopLock.tabId = tabId;
-    desktopLock.attached = true;
-    const size = await pageSize(tabId);
-    const view = await lockViewport(tabId, {
-      width: DESKTOP_WIDTH,
-      height: Math.max(900, Number(size.height) || 900),
-    });
-    return {
-      ok: true,
-      width: Number(view.width) || DESKTOP_WIDTH,
-      height: Number(view.height) || 0,
-      contractWidth: DESKTOP_WIDTH,
-      zoom: 1,
-    };
-  } catch (error) {
-    await releaseDesktopLock();
-    throw error;
+async function releaseViewport(tabId) {
+  if (!Number.isInteger(tabId)) return;
+  await detach(tabId);
+  if (chrome.tabs.setZoomSettings) {
+    await chrome.tabs.setZoomSettings(tabId, { mode: "automatic", scope: "per-tab" }).catch(() => {});
   }
 }
 
@@ -406,15 +370,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
-  if (message.type === "HC_LOCK_DESKTOP_VIEWPORT") {
-    lockDesktopViewport(message.tabId).then(sendResponse, (error) => {
-      sendResponse({ ok: false, error: error.message, contractWidth: DESKTOP_WIDTH });
-    });
-    return true;
-  }
-
   if (message.type === "HC_RELEASE_VIEWPORT") {
-    releaseDesktopLock().then(() => sendResponse({ ok: true }), (error) => {
+    releaseViewport(message.tabId).then(() => sendResponse({ ok: true }), (error) => {
       sendResponse({ ok: false, error: error.message });
     });
     return true;

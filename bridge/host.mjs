@@ -3,6 +3,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { mcpPayload, namedBoard, nodeId } from "./mcp-payload.mjs";
 
 const HOST_VERSION = "1.2.32";
 const BOARD_NAMES = ["Navigation", "Hover States", "Components"];
@@ -94,18 +95,6 @@ async function paperCall(name, args = {}) {
   return rpc("tools/call", { name, arguments: withFile }, {
     timeoutMs: name === "write_html" ? 120000 : 90000,
   });
-}
-
-function mcpPayload(result) {
-  for (const item of result?.content || []) {
-    if (item.type !== "text") continue;
-    try { return JSON.parse(item.text); } catch { return { text: item.text }; }
-  }
-  return {};
-}
-
-function nodeId(payload) {
-  return payload?.createdNodes?.[0]?.id || payload?.ids?.[0] || payload?.nodeId || payload?.id || null;
 }
 
 function captureToolHome() {
@@ -229,7 +218,7 @@ async function getBoards() {
 
 async function ensureBoard(name, index) {
   const current = await getBoards();
-  let board = current.artboards.find((item) => item.name === name);
+  const board = namedBoard(current.artboards, name);
   if (board?.id) return board;
   const position = boardPosition(current.artboards, index);
   const created = mcpPayload(await paperCall("create_artboard", {

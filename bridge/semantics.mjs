@@ -1,9 +1,8 @@
+import { mcpPayload } from "./mcp-payload.mjs";
+
 function payload(result) {
-  for (const item of result?.content || []) {
-    if (item.type !== "text") continue;
-    try { return JSON.parse(item.text); } catch { return { text: item.text }; }
-  }
-  return result || {};
+  if (!Array.isArray(result?.content)) return result || {};
+  return mcpPayload(result);
 }
 
 function childrenOf(raw) {

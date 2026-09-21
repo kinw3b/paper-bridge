@@ -21,14 +21,16 @@ fi
 INSTALL_DIR="$HOME/Library/Application Support/Paper Capture Tool"
 CHROME_DIR="$HOME/Library/Application Support/Google/Chrome/NativeMessagingHosts"
 HOST_COPY="$INSTALL_DIR/host.mjs"
+PAYLOAD_COPY="$INSTALL_DIR/mcp-payload.mjs"
 SEMANTICS_COPY="$INSTALL_DIR/semantics.mjs"
 LAUNCHER="$INSTALL_DIR/run-paper-capture-host"
 MANIFEST="$CHROME_DIR/$HOST_NAME.json"
 
 mkdir -p "$INSTALL_DIR" "$CHROME_DIR"
 cp "$SCRIPT_DIR/bridge/host.mjs" "$HOST_COPY"
+cp "$SCRIPT_DIR/bridge/mcp-payload.mjs" "$PAYLOAD_COPY"
 cp "$SCRIPT_DIR/bridge/semantics.mjs" "$SEMANTICS_COPY"
-chmod 700 "$HOST_COPY" "$SEMANTICS_COPY"
+chmod 700 "$HOST_COPY" "$PAYLOAD_COPY" "$SEMANTICS_COPY"
 
 {
   printf '%s\n' '#!/bin/sh'

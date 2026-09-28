@@ -52,3 +52,34 @@ test("pseudo markup emits <img> for a lone url() and a div otherwise", () => {
     '<div style="font-family: &quot;Inter&quot;, sans-serif;"></div>',
   );
 });
+
+test("pseudo markup wraps mixed content in the requested tag (0.4.4 uses <span> inside <p>)", () => {
+  const { pseudoMarkup } = load();
+  assert.equal(
+    pseudoMarkup({ content: '"•"', display: "inline" }, "span"),
+    '<span style="display: inline;">•</span>',
+  );
+  assert.equal(
+    pseudoMarkup({ content: 'url("a.png")', display: "block" }, "span"),
+    '<img src="a.png" style="display: block;">',
+  );
+});
+
+test("nesting scope demotes invalid children like Paper Snapshot 0.4.4", () => {
+  const { mustDemote, childScope } = load();
+  const root = { inParagraph: false, inAnchor: false, inButton: false };
+  const inP = childScope("p", root);
+  assert.equal(inP.inParagraph, true);
+  assert.equal(mustDemote("div", inP), true);
+  assert.equal(mustDemote("h2", inP), true);
+  assert.equal(mustDemote("span", inP), false);
+  assert.equal(mustDemote("div", root), false);
+  const inA = childScope("a", root);
+  assert.equal(mustDemote("a", inA), true);
+  assert.equal(mustDemote("div", inA), false);
+  const inButton = childScope("button", inP);
+  assert.equal(inButton.inParagraph, false, "<button> resets the paragraph scope");
+  assert.equal(mustDemote("div", inButton), false);
+  assert.equal(mustDemote("button", inButton), true);
+  assert.equal(childScope("span", inA), inA, "other tags pass the scope through");
+});

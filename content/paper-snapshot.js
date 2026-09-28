@@ -1,9 +1,13 @@
 (() => {
-  // Paper Snapshot 0.3.12 serializer (lidfahaahiogmnlccifabccgplofocck).
+  // Paper Snapshot 0.4.4 serializer (lidfahaahiogmnlccifabccgplofocck).
   // The official picker never selects SVGElement — only an HTML host — then this
   // walk inlines <use>, copies SVG geometry attrs, and diffs computed CSS.
   // 0.3.12 additions: reduced-motion emulation, canvas/video rasterization,
   // pseudo `content: url()` → <img>, positioned/transform probe resets.
+  // 0.4.4 additions: valid nesting (block tags inside <p>, <a> inside <a>,
+  // <button> inside <button> emit as <span>; pseudo wrappers are <span> inside
+  // <p>), <img> percentage sizes pinned to px when they would collapse the
+  // parent, and appearance:none checkbox/radio with pseudo kids emit as <div>.
   const VOID_TAGS = new Set([
     "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta",
     "param", "source", "track", "wbr",
@@ -13,6 +17,15 @@
     "table", "thead", "tbody", "tfoot", "tr", "td", "th", "caption", "colgroup", "col",
   ]);
   const SKIP_TAGS = new Set(["script", "style", "meta", "link", "noscript"]);
+  // 0.4.4: tags that cannot live inside <p>; re-emitted as <span> there.
+  const BLOCK_TAGS = new Set([
+    "address", "article", "aside", "blockquote", "center", "dd", "details", "dialog",
+    "dir", "div", "dl", "dt", "fieldset", "figcaption", "figure", "footer", "form",
+    "h1", "h2", "h3", "h4", "h5", "h6", "header", "hgroup", "hr", "li", "listing",
+    "main", "menu", "nav", "ol", "p", "pre", "search", "section", "summary", "table",
+    "ul",
+  ]);
+  const ROOT_SCOPE = Object.freeze({ inParagraph: false, inAnchor: false, inButton: false });
   const COLLAPSED_TRANSFORMS = new Set([
     "matrix(0, 0, 0, 1, 0, 0)",
     "matrix(0, 0, 0, 0, 0, 0)",
@@ -90,7 +103,7 @@
     return parts;
   }
 
-  function pseudoMarkup(styles) {
+  function pseudoMarkup(styles, wrapTag = "div") {
     const parts = pseudoContentParts(styles.content);
     delete styles.content;
     const style = cssText(styles);
@@ -102,7 +115,54 @@
     for (const part of parts) {
       inner += part.kind === "url" ? `<img src="${escapeAttr(part.url)}">` : escapeText(part.text);
     }
-    return `<div style="${escapeAttr(style)}">${inner}</div>`;
+    return `<${wrapTag} style="${escapeAttr(style)}">${inner}</${wrapTag}>`;
+  }
+
+  // 0.4.4: nesting scope so the emitted HTML stays valid when Paper parses it.
+  function mustDemote(tag, scope) {
+    return Boolean(
+      (scope.inParagraph && BLOCK_TAGS.has(tag))
+      || (scope.inAnchor && tag === "a")
+      || (scope.inButton && tag === "button"),
+    );
+  }
+
+  function childScope(tag, scope) {
+    if (tag === "p") return { ...scope, inParagraph: true };
+    if (tag === "a") return { ...scope, inAnchor: true };
+    if (tag === "button") return { ...scope, inButton: true, inParagraph: false };
+    return scope;
+  }
+
+  // 0.4.4: nearest flat-tree parent that generates a box (skips display:contents).
+  function layoutParent(element) {
+    let node = element;
+    for (;;) {
+      let next = null;
+      if (node.assignedSlot) next = node.assignedSlot;
+      else if (node.parentElement) next = node.parentElement;
+      else if (node.parentNode instanceof ShadowRoot) next = node.parentNode.host;
+      if (!next) return null;
+      if (window.getComputedStyle(next).display !== "contents") return next;
+      node = next;
+    }
+  }
+
+  // 0.4.4: a percentage <img> width/height is pinned to its used px size when the
+  // parent's box depends on it (shrink-to-fit parent), otherwise Paper resolves the
+  // percentage against a parent that no longer has the image's size.
+  function pinPercentSize(element, styles, prop) {
+    if (!styles[prop]?.includes("%")) return;
+    const parent = layoutParent(element);
+    if (!parent) return;
+    const used = window.getComputedStyle(element)[prop];
+    const before = parent.getBoundingClientRect()[prop];
+    const inline = element.getAttribute("style");
+    element.style.setProperty(prop, "0px", "important");
+    const after = parent.getBoundingClientRect()[prop];
+    if (inline === null) element.removeAttribute("style");
+    else element.setAttribute("style", inline);
+    if (after !== before) styles[prop] = used;
   }
 
   function collapsedAbsolute(styles) {
@@ -364,7 +424,7 @@
     return [referenced];
   }
 
-  function serializeNode(node, { isRoot = false, flattenMotion = false, layerName = "" } = {}) {
+  function serializeNode(node, { isRoot = false, flattenMotion = false, layerName = "", scope = ROOT_SCOPE } = {}) {
     if (!(node instanceof Element || node instanceof SVGElement)) {
       if (node instanceof Text) return escapeText(visibleText(node));
       return "";
@@ -393,10 +453,16 @@
 
     const kids = [];
     let styles = {};
+    let outTag = TABLE_TAGS.has(tag) || tag === "body" ? "div" : tag;
+    const keep = isSvgDescendant(node)
+      || (typeof node.checkVisibility === "function" && node.checkVisibility() && computed.display !== "contents")
+      || isRoot;
+    const nextScope = keep ? childScope(outTag, scope) : scope;
+    const pseudoTag = nextScope.inParagraph ? "span" : "div";
     const canStyle = !(node instanceof SVGElement) || node instanceof SVGGraphicsElement;
     if (canStyle) {
       const before = computedStyles(node, { pseudo: "::before" });
-      if (Object.keys(before).length && !collapsedAbsolute(before)) kids.push(pseudoMarkup(before));
+      if (Object.keys(before).length && !collapsedAbsolute(before)) kids.push(pseudoMarkup(before, pseudoTag));
       styles = computedStyles(node, { isRoot });
     }
 
@@ -414,11 +480,11 @@
         if (option) kids.push(`<option selected>${escapeText(option.textContent || "")}</option>`);
         continue;
       } else if (child) expanded = [child];
-      for (const next of expanded) kids.push(serializeNode(next, { isRoot: false }));
+      for (const next of expanded) kids.push(serializeNode(next, { isRoot: false, scope: nextScope }));
     }
 
     const after = computedStyles(node, { pseudo: "::after" });
-    if (Object.keys(after).length && !collapsedAbsolute(after)) kids.push(pseudoMarkup(after));
+    if (Object.keys(after).length && !collapsedAbsolute(after)) kids.push(pseudoMarkup(after, pseudoTag));
 
     const attrs = [];
     if (node instanceof HTMLImageElement) {
@@ -428,6 +494,8 @@
         styles.width = image.width;
         styles.height = image.height;
       }
+      pinPercentSize(node, styles, "width");
+      pinPercentSize(node, styles, "height");
     }
     if (node instanceof HTMLInputElement) {
       if (node.value) attrs.push(["value", node.value]);
@@ -447,7 +515,10 @@
       }
     }
 
-    let outTag = TABLE_TAGS.has(tag) || tag === "body" ? "div" : tag;
+    if (node instanceof HTMLInputElement
+      && (node.type === "checkbox" || node.type === "radio")
+      && styles.appearance === "none"
+      && kids.length > 0) outTag = "div";
     if (rasterized) {
       const dataUrl = rasterize(node);
       if (dataUrl) {
@@ -457,6 +528,7 @@
         if (styles.height === undefined || styles.height === "auto") styles.height = computed.height;
       }
     }
+    if (mustDemote(outTag, scope)) outTag = "span";
     if (outTag !== tag) attrs.push(["paper-snapshot-original-tag", node.tagName]);
     if (node instanceof SVGElement) {
       const svgStyle = window.getComputedStyle(node);
@@ -488,9 +560,6 @@
       }
       attrs.push(["style", cssText(styles)]);
     }
-    const keep = isSvgDescendant(node)
-      || (typeof node.checkVisibility === "function" && node.checkVisibility() && styles.display !== "contents")
-      || isRoot;
     if (!keep) return kids.join("");
     const open = `<${outTag}${attrs.map(([name, value]) => ` ${name}="${escapeAttr(value)}"`).join("")}>`;
     const close = VOID_TAGS.has(outTag) ? "" : `</${outTag}>`;
@@ -642,5 +711,7 @@
     findById,
     pseudoContentParts,
     pseudoMarkup,
+    mustDemote,
+    childScope,
   };
 })();

@@ -83,3 +83,65 @@ test("nesting scope demotes invalid children like Paper Snapshot 0.4.4", () => {
   assert.equal(mustDemote("button", inButton), true);
   assert.equal(childScope("span", inA), inA, "other tags pass the scope through");
 });
+
+function loadWith(globals) {
+  const sandbox = { globalThis: {}, ...globals };
+  sandbox.globalThis.globalThis = sandbox.globalThis;
+  Object.assign(sandbox.globalThis, globals);
+  vm.createContext(sandbox);
+  vm.runInContext(fs.readFileSync(path.join(dir, "paper-snapshot.js"), "utf8"), sandbox);
+  return sandbox.globalThis.PaperCaptureSnapshot;
+}
+
+test("empty colspan>1 table cells pad with table-cell siblings like Paper Snapshot 0.4.10", () => {
+  class HTMLTableCellElement {
+    constructor(tagName, colSpan) { this.tagName = tagName; this.colSpan = colSpan; }
+  }
+  const { colspanPadding } = loadWith({ HTMLTableCellElement });
+  const pad = '<div paper-snapshot-original-tag="TD" style="display: table-cell;"></div>';
+  assert.equal(colspanPadding(new HTMLTableCellElement("TD", 3), { display: "table-cell" }, ""), pad + pad);
+  assert.equal(
+    colspanPadding(new HTMLTableCellElement("TH", 2), { display: "table-cell" }, ""),
+    '<div paper-snapshot-original-tag="TH" style="display: table-cell;"></div>',
+  );
+  // Filled cells, single-column cells, and restyled cells get no padding.
+  assert.equal(colspanPadding(new HTMLTableCellElement("TD", 3), { display: "table-cell" }, "x"), "");
+  assert.equal(colspanPadding(new HTMLTableCellElement("TD", 1), { display: "table-cell" }, ""), "");
+  assert.equal(colspanPadding(new HTMLTableCellElement("TD", 3), { display: "block" }, ""), "");
+  assert.equal(colspanPadding({ tagName: "DIV", colSpan: 3 }, { display: "table-cell" }, ""), "");
+});
+
+test("Elementor .elementor-invisible is lifted for capture and restored unless animated (0.4.10)", () => {
+  const { liftElementorInvisible } = loadWith({});
+  const el = (classes) => {
+    const set = new Set(classes);
+    return {
+      set,
+      classList: {
+        remove: (c) => set.delete(c),
+        add: (c) => set.add(c),
+        contains: (c) => set.has(c),
+      },
+    };
+  };
+  const stillHidden = el(["elementor-invisible"]);
+  const animatedIn = el(["elementor-invisible"]);
+  const root = { querySelectorAll: (sel) => (sel === ".elementor-invisible" ? [stillHidden, animatedIn] : []) };
+  const restore = liftElementorInvisible(root);
+  assert.equal(stillHidden.set.has("elementor-invisible"), false);
+  assert.equal(animatedIn.set.has("elementor-invisible"), false);
+  animatedIn.set.add("animated");
+  restore();
+  assert.equal(stillHidden.set.has("elementor-invisible"), true);
+  assert.equal(animatedIn.set.has("elementor-invisible"), false);
+});
+
+test("style probe is shadow-rooted and text-align resets only on the root (0.4.10)", () => {
+  const src = fs.readFileSync(path.join(dir, "paper-snapshot.js"), "utf8");
+  assert.match(src, /createElement\("x-paper-style-reference"\)/);
+  assert.match(src, /attachShadow\(\{ mode: "open" \}\)\.append\(probe\)/);
+  assert.match(src, /setProperty\("all", "inherit", "important"\)/);
+  const rootBlock = src.slice(src.indexOf("    if (isRoot) {\n      probe.style.color"), src.indexOf("if (!attachProbe(element, host))"));
+  assert.match(rootBlock, /text-align/);
+  assert.equal((src.match(/"text-align", "initial"/g) || []).length, 1);
+});

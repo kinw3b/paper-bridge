@@ -1,5 +1,5 @@
 (() => {
-  // Paper Snapshot 0.4.4 serializer (lidfahaahiogmnlccifabccgplofocck).
+  // Paper Snapshot 0.4.10 serializer (lidfahaahiogmnlccifabccgplofocck).
   // The official picker never selects SVGElement — only an HTML host — then this
   // walk inlines <use>, copies SVG geometry attrs, and diffs computed CSS.
   // 0.3.12 additions: reduced-motion emulation, canvas/video rasterization,
@@ -8,6 +8,11 @@
   // <button> inside <button> emit as <span>; pseudo wrappers are <span> inside
   // <p>), <img> percentage sizes pinned to px when they would collapse the
   // parent, and appearance:none checkbox/radio with pseudo kids emit as <div>.
+  // 0.4.10 additions: the style probe lives in a shadow root under
+  // <x-paper-style-reference> (all: inherit) so page CSS cannot skew it,
+  // text-align: initial only on the root probe, input/textarea/select pin
+  // their used width/height, empty colspan>1 cells pad with table-cell
+  // siblings, and Elementor .elementor-invisible is lifted during capture.
   const VOID_TAGS = new Set([
     "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta",
     "param", "source", "track", "wbr",
@@ -235,10 +240,40 @@
     }
   }
 
+  // 0.4.10: the probe <link> sits in an open shadow root of a hidden
+  // <x-paper-style-reference> host so page selectors cannot restyle it.
+  function makeProbeHost(probe) {
+    const host = document.createElement("x-paper-style-reference");
+    host.style.setProperty("all", "inherit", "important");
+    host.style.setProperty("display", "none", "important");
+    host.attachShadow({ mode: "open" }).append(probe);
+    return host;
+  }
+
+  // 0.4.10: an empty colspan>1 cell pads its row with table-cell siblings.
+  function colspanPadding(node, computed, kidsHtml) {
+    if (!(node instanceof HTMLTableCellElement)) return "";
+    if (!(node.colSpan > 1) || computed.display !== "table-cell" || kidsHtml !== "") return "";
+    return `<div paper-snapshot-original-tag="${node.tagName}" style="display: table-cell;"></div>`.repeat(node.colSpan - 1);
+  }
+
+  // 0.4.10: Elementor parks entrance-animated widgets behind
+  // .elementor-invisible; lift it for the capture, restore what did not animate.
+  function liftElementorInvisible(root = document) {
+    const hidden = Array.from(root.querySelectorAll(".elementor-invisible"));
+    for (const el of hidden) el.classList.remove("elementor-invisible");
+    return () => {
+      for (const el of hidden) {
+        if (!el.classList.contains("animated")) el.classList.add("elementor-invisible");
+      }
+    };
+  }
+
   function computedStyles(element, { isRoot = false, pseudo } = {}) {
     const next = {};
     const target = readStyleMap(element, pseudo);
     const probe = document.createElement("link");
+    const host = makeProbeHost(probe);
     probe.textContent = element.textContent;
     probe.style.setProperty("background-color", "transparent", "important");
     probe.style.setProperty("border-color", "hotpink", "important");
@@ -263,18 +298,18 @@
     probe.style.setProperty("rotate", "none", "important");
     probe.style.setProperty("scale", "none", "important");
     probe.style.setProperty("padding", "0", "important");
-    probe.style.setProperty("text-align", "initial", "important");
     probe.style.setProperty("width", "auto", "important");
     probe.style.setProperty("z-index", "auto", "important");
     if (isRoot) {
       probe.style.color = "hotpink";
       probe.style.lineHeight = "0.1234";
       probe.style.fontFamily = '"Papyrus"';
+      probe.style.setProperty("text-align", "initial", "important");
       probe.style.listStyleType = "initial";
     }
-    if (!attachProbe(element, probe)) return {};
+    if (!attachProbe(element, host)) return {};
     const baseline = readStyleMap(probe, pseudo);
-    probe.remove();
+    host.remove();
     for (const name of stylePropertyNames()) {
       const value = target.get(name);
       const prior = baseline.get(name);
@@ -497,6 +532,10 @@
       pinPercentSize(node, styles, "width");
       pinPercentSize(node, styles, "height");
     }
+    if (node instanceof HTMLInputElement || node instanceof HTMLTextAreaElement || node instanceof HTMLSelectElement) {
+      styles.width ??= computed.width;
+      styles.height ??= computed.height;
+    }
     if (node instanceof HTMLInputElement) {
       if (node.value) attrs.push(["value", node.value]);
       if (node.type) attrs.push(["type", node.type]);
@@ -561,9 +600,10 @@
       attrs.push(["style", cssText(styles)]);
     }
     if (!keep) return kids.join("");
+    const inner = kids.join("");
     const open = `<${outTag}${attrs.map(([name, value]) => ` ${name}="${escapeAttr(value)}"`).join("")}>`;
     const close = VOID_TAGS.has(outTag) ? "" : `</${outTag}>`;
-    return `${open}${kids.join("")}${close}`;
+    return `${open}${inner}${close}${colspanPadding(node, computed, inner)}`;
   }
 
   function rasterize(element) {
@@ -692,6 +732,7 @@
   function serialize(element, { layerName = "", flattenMotion = false } = {}) {
     if (!(element instanceof Element)) return "";
     let restore = null;
+    const restoreElementor = liftElementorInvisible();
     try {
       restore = emulateReducedMotion();
     } catch (error) {
@@ -701,6 +742,7 @@
       return serializeNode(element, { isRoot: true, flattenMotion, layerName });
     } finally {
       if (restore) restore();
+      restoreElementor();
     }
   }
 
@@ -713,5 +755,7 @@
     pseudoMarkup,
     mustDemote,
     childScope,
+    colspanPadding,
+    liftElementorInvisible,
   };
 })();

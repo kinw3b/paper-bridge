@@ -1,5 +1,5 @@
 (() => {
-  // Paper Snapshot 0.4.10 serializer (lidfahaahiogmnlccifabccgplofocck).
+  // Paper Snapshot 0.4.13 serializer (lidfahaahiogmnlccifabccgplofocck).
   // The official picker never selects SVGElement — only an HTML host — then this
   // walk inlines <use>, copies SVG geometry attrs, and diffs computed CSS.
   // 0.3.12 additions: reduced-motion emulation, canvas/video rasterization,
@@ -13,6 +13,8 @@
   // text-align: initial only on the root probe, input/textarea/select pin
   // their used width/height, empty colspan>1 cells pad with table-cell
   // siblings, and Elementor .elementor-invisible is lifted during capture.
+  // 0.4.13 addition: an <svg> root with used overflow-x/overflow-y visible
+  // emits them explicitly so Paper does not clip spill past the viewBox.
   const VOID_TAGS = new Set([
     "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta",
     "param", "source", "track", "wbr",
@@ -248,6 +250,15 @@
     host.style.setProperty("display", "none", "important");
     host.attachShadow({ mode: "open" }).append(probe);
     return host;
+  }
+
+  // 0.4.13: an <svg> root whose used overflow is visible says so explicitly
+  // (per axis), so Paper does not clip paths that spill past the viewBox.
+  function svgRootOverflow(node, svgStyle, styles) {
+    if (typeof SVGSVGElement === "undefined" || !(node instanceof SVGSVGElement)) return;
+    for (const axis of ["overflow-x", "overflow-y"]) {
+      if (svgStyle.getPropertyValue(axis) === "visible") styles[axis] = "visible";
+    }
   }
 
   // 0.4.10: an empty colspan>1 cell pads its row with table-cell siblings.
@@ -573,6 +584,7 @@
       const svgStyle = window.getComputedStyle(node);
       if (styles.width === undefined || styles.width === "auto") styles.width = svgStyle.width;
       if (styles.height === undefined || styles.height === "auto") styles.height = svgStyle.height;
+      svgRootOverflow(node, svgStyle, styles);
       for (let [name, value] of sourceAttrs) {
         if (["class", "style", "display", "overflow"].includes(name) || !value) continue;
         if (["fill", "stroke", "color"].includes(name)) {
@@ -756,6 +768,7 @@
     mustDemote,
     childScope,
     colspanPadding,
+    svgRootOverflow,
     liftElementorInvisible,
   };
 })();

@@ -145,3 +145,28 @@ test("style probe is shadow-rooted and text-align resets only on the root (0.4.1
   assert.match(rootBlock, /text-align/);
   assert.equal((src.match(/"text-align", "initial"/g) || []).length, 1);
 });
+
+test("svg root with visible overflow emits overflow-x/overflow-y explicitly (0.4.13)", () => {
+  class SVGElement {}
+  class SVGSVGElement extends SVGElement {}
+  class SVGCircleElement extends SVGElement {}
+  const { svgRootOverflow } = loadWith({ SVGElement, SVGSVGElement });
+  const computed = (values) => ({ getPropertyValue: (name) => values[name] ?? "" });
+  const plain = (o) => JSON.parse(JSON.stringify(o));
+
+  const visible = {};
+  svgRootOverflow(new SVGSVGElement(), computed({ "overflow-x": "visible", "overflow-y": "visible" }), visible);
+  assert.deepEqual(plain(visible), { "overflow-x": "visible", "overflow-y": "visible" });
+
+  const overrides = { "overflow-x": "hidden", width: "20px" };
+  svgRootOverflow(new SVGSVGElement(), computed({ "overflow-x": "visible", "overflow-y": "hidden" }), overrides);
+  assert.deepEqual(plain(overrides), { "overflow-x": "visible", width: "20px" });
+
+  const clipped = {};
+  svgRootOverflow(new SVGSVGElement(), computed({ "overflow-x": "hidden", "overflow-y": "hidden" }), clipped);
+  assert.deepEqual(plain(clipped), {});
+
+  const shape = {};
+  svgRootOverflow(new SVGCircleElement(), computed({ "overflow-x": "visible", "overflow-y": "visible" }), shape);
+  assert.deepEqual(plain(shape), {});
+});
